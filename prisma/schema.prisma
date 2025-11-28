@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model TipoProducto {
+  id                          Int       @id @default(autoincrement())
+  division_servicio_id        Int
+  dadora_id                   Int
+  un_venta_id                 Int
+  un_entrega_id               Int
+  created_at                  DateTime
+  updated_at                  DateTime?
+  deleted_at                  DateTime?
+  habilitado                  Boolean   @default(true)
+  created_by                  String?
+  updated_by                  String?
+  codigo                      String    @unique
+  descripcion                 String
+  unidades_por_unidad_entrega Int
+  peso_por_unidad_venta       Int
+  peso_por_uniad_entrega      Int
+  volumen_por_unidad_entrega  Int
+  unidad_entra_por_bulto      Int
+  alto_por_bulto              Int
+  ancho_por_bulto             Int
+  largo_por_bulto              Int
+  peso_por_bulto              Int
+  volumen_por_bulto           Int
+
+  cubicaciones Cubicacion[]
+  contenedores TipoContenedorProducto[]
+
+  divisionServicio DivisionServicio @relation(fields: [division_servicio_id], references: [id])
+
+  @@map("tipo_producto")
+}
+
+model Cubicacion {
+  id             Int      @id @default(autoincrement())
+  createdAt      DateTime @default(now())
+  descripcion    String?
+  tipoProductoId Int
+  cantidadBultos Int
+  volumenTotalM3 Float
+
+  tipoProducto TipoProducto @relation(fields: [tipoProductoId], references: [id])
+}
+
+model TipoContenedor {
+  id             Int       @id @default(autoincrement())
+  created_at     DateTime
+  updated_at     DateTime?
+  deleted_at     DateTime?
+  habilitado     Boolean   @default(true)
+  created_by     String?
+  updated_by     String?
+  codigo         String    @unique
+  descripcion    String
+  largo_mts      Float
+  ancho_mts      Float
+  alto_mts       Float
+  peso_pallet_kg Float
+  peso_max_kg    Float
+  peso_max_lts   Float
+
+  productos TipoContenedorProducto[]
+
+  @@map("tipo_contenedor")
+}
+
+model TipoContenedorProducto {
+  tipo_contenedor_id Int
+  tipo_producto_id   Int
+  cantidad_max_items Int
+
+  contenedor TipoContenedor @relation(fields: [tipo_contenedor_id], references: [id])
+  producto   TipoProducto   @relation(fields: [tipo_producto_id], references: [id])
+
+  @@id([tipo_contenedor_id, tipo_producto_id])
+  @@map("tipo_contenedor_producto")
+}
+
+model DivisionServicio {
+  id          Int       @id @default(autoincrement())
+  created_at  DateTime  @default(now())
+  updated_at  DateTime?
+  deleted_at  DateTime?
+  habilitado  Boolean   @default(true)
+  created_by  String?
+  updated_by  String?
+  codigo      String    @unique
+  descripcion String
+
+  productos             TipoProducto[]
+  clasificaciones       TransporteClasificacion[]
+  unidadesMedidaEntrega TipoUnidadMedidaEntrega[]
+  unidadesMedidaVenta   TipoUnidadMedidaVenta[]
+
+  @@map("division_servicio")
+}
+
+model TipoUnidadMedida {
+  id          Int       @id @default(autoincrement())
+  created_at  DateTime  @default(now())
+  updated_at  DateTime?
+  deleted_at  DateTime?
+  habilitado  Boolean   @default(true)
+  created_by  String?
+  updated_by  String?
+  codigo      String    @unique
+  descripcion String
+
+  @@map("tipo_unidad_medida")
+}
+
+model TipoUnidadMedidaEntrega {
+  id                   Int       @id @default(autoincrement())
+  division_servicio_id Int?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime?
+  deleted_at           DateTime?
+  habilitado           Boolean   @default(true)
+  created_by           String?
+  updated_by           String?
+  codigo               String    @unique
+  descripcion          String
+
+  divisionServicio DivisionServicio? @relation(fields: [division_servicio_id], references: [id])
+
+  @@map("tipo_unidad_medida_entrega")
+}
+
+model TipoUnidadMedidaVenta {
+  id                   Int       @id @default(autoincrement())
+  division_servicio_id Int?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime?
+  deleted_at           DateTime?
+  habilitado           Boolean   @default(true)
+  created_by           String?
+  updated_by           String?
+  codigo               String    @unique
+  descripcion          String
+
+  divisionServicio DivisionServicio? @relation(fields: [division_servicio_id], references: [id])
+
+  @@map("tipo_unidad_medida_venta")
+}
+
+model TransporteClase {
+  id              Int                       @id @default(autoincrement())
+  codigo          String                    @unique
+  descripcion     String
+  clasificaciones TransporteClasificacion[]
+
+  @@map("transporte_clase")
+}
+
+model TransporteClasificacion {
+  id                       Int    @id @default(autoincrement())
+  clase_transporte_id      Int?
+  division_servicio_id     Int
+  denominacion_de_vehiculo String
+  mt_largo_cub             Int
+  mt_ancho_cub             Int
+  mt_alto_cub              Int
+  mt_total_cub             Int
+  max_peso_kg              Int
+  max_peso_lt              Int
+  max_peso_xmt3            Int
+  pallet_europaleta_total  Int
+  pallet_ariog_total       String
+  pallet_americano_total   String
+
+  clase            TransporteClase? @relation(fields: [clase_transporte_id], references: [id])
+  divisionServicio DivisionServicio @relation(fields: [division_servicio_id], references: [id])
+
+  @@map("transporte_clasificacion")
+}
