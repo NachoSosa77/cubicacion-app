@@ -1,15 +1,24 @@
+// app/cubicacion/components/CubicacionUI.tsx
 "use client";
 
 import { useMemo, useState } from "react";
 import { ITipoProducto } from "../actions/productoActions";
 import { ITipoContenedor } from "../actions/tipoContenedorActions";
-import { calcularCubicacionBultosEnPallet } from "../lib/cubicacion";
+import {
+  DimMm,
+  calcularCubicacionBultosEnPallet,
+  calcularUnidadEnBulto,
+} from "../lib/cubicacion";
 import { CubicacionViewer3D } from "./CubicacionViewer3D";
+import { HighQualityPalletViewer3D } from "./HighQualityPalletViewer3D";
+import { ModoVisualToggle } from "./ModoVisualToggle";
 
 interface Props {
   contenedores: ITipoContenedor[];
   productos: ITipoProducto[];
 }
+
+type ModoVisual = "real" | "real_sep" | "didactico";
 
 export default function CubicacionUI({ contenedores, productos }: Props) {
   const [productoId, setProductoId] = useState<number | "">("");
@@ -18,6 +27,30 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
   const [largoUnidadMm, setLargoUnidadMm] = useState<string>("");
   const [anchoUnidadMm, setAnchoUnidadMm] = useState<string>("");
   const [altoUnidadMm, setAltoUnidadMm] = useState<string>("");
+  const [grosorParedMm, setGrosorParedMm] = useState<string>(""); // grosor de la caja
+  const [modoVisual, setModoVisual] = useState<ModoVisual>("real_sep");
+
+  // Dimensiones de la unidad en mm, validadas
+  const dimUnidadMm: DimMm | null = useMemo(() => {
+    if (!largoUnidadMm || !anchoUnidadMm || !altoUnidadMm) return null;
+
+    const largo = Number(largoUnidadMm);
+    const ancho = Number(anchoUnidadMm);
+    const alto = Number(altoUnidadMm);
+
+    if (
+      !Number.isFinite(largo) ||
+      !Number.isFinite(ancho) ||
+      !Number.isFinite(alto) ||
+      largo <= 0 ||
+      ancho <= 0 ||
+      alto <= 0
+    ) {
+      return null;
+    }
+
+    return { largo, ancho, alto };
+  }, [largoUnidadMm, anchoUnidadMm, altoUnidadMm]);
 
   const productoSeleccionado = useMemo(
     () => productos.find((p) => p.id === productoId),
@@ -29,6 +62,29 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
     [contenedorId, contenedores]
   );
 
+  // Grosor numérico seguro (si está vacío o mal → 0)
+  const grosorNumerico = useMemo(() => {
+    if (!grosorParedMm.trim()) return 0;
+    const g = Number(grosorParedMm);
+    if (!Number.isFinite(g) || g < 0) return 0;
+    return g;
+  }, [grosorParedMm]);
+
+  // Dimensiones internas del bulto que realmente usamos para la cubicación
+  const dimInternaBultoMm: DimMm | null = useMemo(() => {
+    if (!productoSeleccionado) return null;
+
+    const g = grosorNumerico;
+    const interna = (externa: number) => Math.max(externa - 2 * g, 0);
+
+    return {
+      largo: interna(productoSeleccionado.largo_por_bulto),
+      ancho: interna(productoSeleccionado.ancho_por_bulto),
+      alto: interna(productoSeleccionado.alto_por_bulto),
+    };
+  }, [productoSeleccionado, grosorNumerico]);
+
+  // Resultado bultos ↔ pallet
   const resultado = useMemo(() => {
     if (!productoSeleccionado || !contenedorSeleccionado) return null;
 
@@ -53,6 +109,29 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
       return null;
     }
   }, [productoSeleccionado, contenedorSeleccionado, alturaMaxCarga]);
+
+  // Resultado unidad ↔ bulto
+  const resultadoUnidadEnBulto = useMemo(() => {
+    if (!productoSeleccionado || !dimUnidadMm) return null;
+
+    return calcularUnidadEnBulto({
+      producto: productoSeleccionado,
+      dimUnidadMm,
+      grosorParedMm: grosorNumerico,
+    });
+  }, [productoSeleccionado, dimUnidadMm, grosorNumerico]);
+
+  const gapFactor = useMemo(() => {
+    switch (modoVisual) {
+      case "real":
+        return 1; // sin separación visual
+      case "didactico":
+        return 0.85; // más aire
+      case "real_sep":
+      default:
+        return 0.95; // leve separación
+    }
+  }, [modoVisual]);
 
   return (
     <div className="space-y-6">
@@ -89,6 +168,7 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
           </div>
         )}
       </section>
+
       {/* Paso 1.5: producto unitario dentro de la caja (bulto) */}
       {productoSeleccionado && (
         <section className="bg-white rounded-lg shadow-sm p-4 md:p-6 space-y-4">
@@ -109,9 +189,31 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
               <p className="text-xs text-slate-500">
                 Las dimensiones del bulto vienen de la base (tipo_producto).
                 Ahora definimos las dimensiones del producto unitario para ver
-                cómo se acomodan dentro de la caja.
+                cómo se acomodan dentro de la caja y, opcionalmente, el grosor
+                de la pared para calcular las dimensiones internas reales.
               </p>
 
+              {/* Grosor de pared */}
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-slate-700">
+                  Grosor de la pared de la caja (mm)
+                </label>
+                <input
+                  type="number"
+                  className="w-full max-w-xs border rounded-md px-2 py-1 text-xs"
+                  value={grosorParedMm}
+                  onChange={(e) => setGrosorParedMm(e.target.value)}
+                  placeholder="Ej: 3"
+                  min={0}
+                />
+                <p className="text-[10px] text-slate-500">
+                  Se descuenta dos veces el grosor en cada dimensión para
+                  obtener el espacio interno disponible. Si lo dejás vacío, se
+                  asume grosor 0 mm.
+                </p>
+              </div>
+
+              {/* Inputs de dimensiones de la unidad */}
               <div className="grid gap-2 md:grid-cols-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700">
@@ -151,47 +253,121 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
                 </div>
               </div>
 
-              <p className="text-xs text-slate-500">
-                Más adelante estas dimensiones se van a poder guardar junto con
-                el producto. Por ahora las definimos a mano para validar la
-                lógica y la visualización 3D.
-              </p>
-
-              <div className="text-xs text-slate-500">
+              {/* Info de dimensiones del bulto */}
+              <div className="text-xs text-slate-500 mt-3 space-y-1">
                 <p className="font-medium text-slate-700">
-                  Dimensiones de la caja (bulto) actual:
+                  Dimensiones de la caja (bulto) externas:
                 </p>
                 <p>
                   {productoSeleccionado.largo_por_bulto} ×{" "}
                   {productoSeleccionado.ancho_por_bulto} ×{" "}
                   {productoSeleccionado.alto_por_bulto} mm
                 </p>
+
+                {dimInternaBultoMm && (
+                  <>
+                    <p className="font-medium text-slate-700 mt-2">
+                      Dimensiones internas usadas para la cubicación:
+                    </p>
+                    <p>
+                      {dimInternaBultoMm.largo.toFixed(1)} ×{" "}
+                      {dimInternaBultoMm.ancho.toFixed(1)} ×{" "}
+                      {dimInternaBultoMm.alto.toFixed(1)} mm
+                    </p>
+                  </>
+                )}
               </div>
+
+              {/* Resultado de cubicación interna */}
+              <div className="mt-3 text-xs text-slate-600 space-y-1 border-t pt-3">
+                {dimUnidadMm ? (
+                  !resultadoUnidadEnBulto ? (
+                    <p className="text-red-500">
+                      Con estas dimensiones de unidad y el grosor indicado no
+                      entra ningún producto completo dentro del bulto.
+                    </p>
+                  ) : (
+                    <>
+                      <p className="font-medium text-slate-700">
+                        Distribución de productos dentro del bulto:
+                      </p>
+                      <p>
+                        Unidades por eje (largo × ancho × alto):{" "}
+                        <span className="font-mono">
+                          {resultadoUnidadEnBulto.unidadesPorEje.x} ×{" "}
+                          {resultadoUnidadEnBulto.unidadesPorEje.y} ×{" "}
+                          {resultadoUnidadEnBulto.unidadesPorEje.z}
+                        </span>
+                      </p>
+                      <p>
+                        Unidades totales por bulto:{" "}
+                        <span className="font-semibold">
+                          {resultadoUnidadEnBulto.unidadesTotales}
+                        </span>
+                      </p>
+                      <p>
+                        Ocupación del volumen interno de la caja:{" "}
+                        <span className="font-semibold">
+                          {resultadoUnidadEnBulto.ocupacionVolumenInterno.toFixed(
+                            1
+                          )}
+                          %
+                        </span>
+                      </p>
+                    </>
+                  )
+                ) : (
+                  <p className="text-slate-500">
+                    Ingresá las dimensiones de la unidad para ver cuántas entran
+                    en la caja y la ocupación interna.
+                  </p>
+                )}
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Más adelante estas dimensiones se van a poder guardar junto con
+                el producto. Por ahora las definimos a mano para validar la
+                lógica, el grosor de la caja y la visualización 3D.
+              </p>
             </div>
 
             {/* Viewer 3D: producto dentro de la caja */}
-            <div>
-              {largoUnidadMm && anchoUnidadMm && altoUnidadMm ? (
+            <div className="space-y-2">
+              {/* Controles de modo visual */}
+              <ModoVisualToggle value={modoVisual} onChange={setModoVisual} />
+
+              {resultadoUnidadEnBulto ? (
                 <CubicacionViewer3D
                   caja={{
-                    // bulto en mm → metros
+                    // bulto en mm → metros (externo, pero la unidad respeta interno)
                     largoM: productoSeleccionado.largo_por_bulto / 1000,
                     anchoM: productoSeleccionado.ancho_por_bulto / 1000,
                     altoM: productoSeleccionado.alto_por_bulto / 1000,
                   }}
-                  producto={{
-                    // unidad en mm → metros
-                    largoM: Number(largoUnidadMm) / 1000,
-                    anchoM: Number(anchoUnidadMm) / 1000,
-                    altoM: Number(altoUnidadMm) / 1000,
+                  unidad={{
+                    // unidad ORIENTADA en mm → metros
+                    largoM: resultadoUnidadEnBulto.orientacion.largo / 1000,
+                    anchoM: resultadoUnidadEnBulto.orientacion.ancho / 1000,
+                    altoM: resultadoUnidadEnBulto.orientacion.alto / 1000,
                   }}
+                  grid={{
+                    x: resultadoUnidadEnBulto.unidadesPorEje.x,
+                    y: resultadoUnidadEnBulto.unidadesPorEje.y,
+                    z: resultadoUnidadEnBulto.unidadesPorEje.z,
+                  }}
+                  gapFactor={gapFactor}
                 />
               ) : (
                 <div className="h-80 md:h-96 flex items-center justify-center border rounded-md text-xs text-slate-500 bg-slate-50">
-                  Ingresá las dimensiones de la unidad (largo, ancho, alto en
-                  mm) para ver la distribución 3D dentro de la caja.
+                  Ingresá dimensiones válidas de la unidad (largo, ancho, alto
+                  en mm) para ver cómo se acomodan dentro de la caja.
                 </div>
               )}
+
+              <p className="text-[10px] text-slate-400">
+                El modo solo afecta la separación visual entre unidades. Las
+                cantidades y dimensiones reales se mantienen.
+              </p>
             </div>
           </div>
         </section>
@@ -254,7 +430,7 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
         )}
       </section>
 
-      {/* Resultado de la cubicación + vista 3D */}
+      {/* Resultado de la cubicación + vista 3D (pallet) */}
       <section className="bg-white rounded-lg border border-slate-200 p-4 md:p-6 space-y-4">
         <h2 className="text-lg font-semibold mb-4">
           3. Resultado de cubicación (cajas ↔ pallet)
@@ -270,50 +446,16 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
           </p>
         ) : (
           <>
-            {/* Datos numéricos */}
             <div className="grid gap-3 text-sm md:grid-cols-2">
-              <div className="space-y-1">
-                <p>
-                  <span className="font-medium">Cajas por capa:</span>{" "}
-                  {resultado.cajasPorCapa}
-                </p>
-                <p>
-                  <span className="font-medium">Capas:</span> {resultado.capas}
-                </p>
-                <p>
-                  <span className="font-medium">Cajas totales por pallet:</span>{" "}
-                  {resultado.cajasTotales}
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <p>
-                  <span className="font-medium">Productos por caja:</span>{" "}
-                  {resultado.productosPorCaja}
-                </p>
-                <p>
-                  <span className="font-medium">
-                    Productos totales por pallet:
-                  </span>{" "}
-                  {resultado.productosTotales}
-                </p>
-                <p>
-                  <span className="font-medium">Ocupación volumétrica:</span>{" "}
-                  {resultado.ocupacionVolumenPorcentaje.toFixed(1)} %
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <p>
-                  <span className="font-medium">Volumen por bulto (m³):</span>{" "}
-                  {resultado.volumenBultoM3.toFixed(4)}
-                </p>
-                <p>
-                  <span className="font-medium">Volumen contenedor (m³):</span>{" "}
-                  {resultado.volumenContenedorM3.toFixed(4)}
-                </p>
-              </div>
+              {/* ... tus datos numéricos como ahora ... */}
             </div>
+
+            {/* Vista 3D de alta calidad del pallet + bultos */}
+            <HighQualityPalletViewer3D
+              producto={productoSeleccionado}
+              contenedor={contenedorSeleccionado}
+              resultado={resultado}
+            />
           </>
         )}
       </section>

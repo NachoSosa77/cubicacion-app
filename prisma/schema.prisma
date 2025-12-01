@@ -34,11 +34,42 @@ model TipoProducto {
 
   cubicaciones Cubicacion[]
   contenedores TipoContenedorProducto[]
+  cubicacionProductoBulto CubicacionProductoBulto?  // <- opcional
+  cubicacionesProductoContenedor CubicacionProductoContenedor[]
 
   divisionServicio DivisionServicio @relation(fields: [division_servicio_id], references: [id])
 
   @@map("tipo_producto")
 }
+
+model CubicacionProductoBulto {
+  id               Int          @id @default(autoincrement())
+
+  tipo_producto_id Int          @unique
+  tipoProducto     TipoProducto @relation(fields: [tipo_producto_id], references: [id])
+
+  largo_unidad_mm  Int
+  ancho_unidad_mm  Int
+  alto_unidad_mm   Int
+
+  grosor_pared_mm  Int          @default(0)
+
+  unidades_eje_x   Int
+  unidades_eje_y   Int
+  unidades_eje_z   Int
+
+  ocupacion_interna Decimal     @default(0.0)
+
+  orient_largo_mm  Int
+  orient_ancho_mm  Int
+  orient_alto_mm   Int
+
+  created_at       DateTime     @default(now())
+  updated_at       DateTime     @updatedAt
+
+  @@map("cubicacion_producto_bulto")
+}
+
 
 model Cubicacion {
   id             Int      @id @default(autoincrement())
@@ -50,6 +81,35 @@ model Cubicacion {
 
   tipoProducto TipoProducto @relation(fields: [tipoProductoId], references: [id])
 }
+
+model CubicacionProductoContenedor {
+  id                Int           @id @default(autoincrement())
+
+  // Relación con producto y contenedor
+  tipo_producto_id  Int
+  tipo_contenedor_id Int
+
+  tipoProducto      TipoProducto   @relation(fields: [tipo_producto_id], references: [id])
+  tipoContenedor    TipoContenedor @relation(fields: [tipo_contenedor_id], references: [id])
+
+  // Parámetros usados en el cálculo
+  altura_max_carga_m Decimal?      // por si no usaste la altura total del contenedor
+
+  // Resultado de cubicación (bultos ↔ pallet/contenedor)
+  cajas_por_capa     Int
+  capas              Int
+  cajas_totales      Int
+  productos_por_caja Int
+  productos_totales  Int
+  ocupacion_volumen  Decimal       // % de ocupación volumétrica del contenedor
+
+  created_at         DateTime      @default(now())
+  updated_at         DateTime      @updatedAt
+
+  @@unique([tipo_producto_id, tipo_contenedor_id])
+  @@map("cubicacion_producto_contenedor")
+}
+
 
 model TipoContenedor {
   id             Int       @id @default(autoincrement())
@@ -69,6 +129,7 @@ model TipoContenedor {
   peso_max_lts   Float
 
   productos TipoContenedorProducto[]
+  cubicacionesProductoContenedor CubicacionProductoContenedor[]
 
   @@map("tipo_contenedor")
 }
