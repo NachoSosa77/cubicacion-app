@@ -14,6 +14,9 @@ export interface HighQualityPalletViewer3DProps {
   resultado: ResultadoCubicacion;
 }
 
+// 👉 grosor del pallet en “unidades 3D”
+const PALLET_HEIGHT = 0.12;
+
 // Normalizamos las medidas para que entren “cómodas” en la escena
 function getScaleFactors(contenedor: ITipoContenedor) {
   const maxBase = Math.max(contenedor.largo_mts, contenedor.ancho_mts);
@@ -28,10 +31,10 @@ function getScaleFactors(contenedor: ITipoContenedor) {
 }
 
 function PalletBase({ largo, ancho }: { largo: number; ancho: number }) {
-  const height = 0.12; // grosor visual del pallet
+  const height = PALLET_HEIGHT; // usamos la constante
 
   return (
-    <mesh position={[0, height / 2, 0]} >
+    <mesh position={[0, height / 2, 0]}>
       <boxGeometry args={[largo, height, ancho]} />
       <meshStandardMaterial color="#8b5a2b" />
     </mesh>
@@ -42,13 +45,16 @@ function BoxesStack({
   producto,
   resultado,
   scale,
+  palletHeight,
 }: {
   producto: ITipoProducto;
   resultado: ResultadoCubicacion;
   scale: number;
+  palletHeight: number;
 }) {
-  const largoBulto = (producto.largo_por_bulto / 1000) * scale;
-  const anchoBulto = (producto.ancho_por_bulto / 1000) * scale;
+  // Dimensiones del bulto según la ORIENTACIÓN ELEGIDA en el cálculo
+  const largoBulto = resultado.bultoLargoEnPalletM * scale;
+  const anchoBulto = resultado.bultoAnchoEnPalletM * scale;
   const altoBulto = (producto.alto_por_bulto / 1000) * scale;
 
   const boxes: JSX.Element[] = [];
@@ -64,10 +70,11 @@ function BoxesStack({
           -((resultado.cajasPorAncho * anchoBulto) / 2) +
           anchoBulto / 2 +
           iy * anchoBulto;
-        const y = 0.12 + altoBulto / 2 + iz * altoBulto; // 0.12 = altura pallet
+        const y = palletHeight + altoBulto / 2 + iz * altoBulto;
 
         boxes.push(
           <mesh key={`${ix}-${iy}-${iz}`} position={[x, y, z]}>
+            {/* 0.98 solo para ver la separación visual */}
             <boxGeometry
               args={[largoBulto * 0.98, altoBulto * 0.98, anchoBulto * 0.98]}
             />
@@ -100,23 +107,27 @@ export function HighQualityPalletViewer3D({
         {/* Cámara */}
         <PerspectiveCamera makeDefault position={[3, 3, 3]} fov={40} />
         <OrbitControls
-          enablePan={false} // Evitamos que el usuario mueva toda la escena sin querer
+          enablePan={false}
           enableZoom
           maxPolarAngle={Math.PI / 2.1}
           minPolarAngle={0.4}
-          target={[0, 0.6, 0]} // 👈 Apuntamos al centro de cajas+pallet
+          target={[0, 0.6, 0]}
         />
 
         {/* Luces */}
         <ambientLight intensity={1.1} />
-        <directionalLight position={[5, 8, 5]} intensity={1.2}  />
-
+        <directionalLight position={[5, 8, 5]} intensity={1.2} />
 
         {/* Pallet base */}
         <PalletBase largo={baseLargo} ancho={baseAncho} />
 
         {/* Cajas apiladas */}
-        <BoxesStack producto={producto} resultado={resultado} scale={scale} />
+        <BoxesStack
+          producto={producto}
+          resultado={resultado}
+          scale={scale}
+          palletHeight={PALLET_HEIGHT}
+        />
       </Canvas>
 
       <p className="px-3 pb-2 pt-1 text-[10px] text-slate-400">

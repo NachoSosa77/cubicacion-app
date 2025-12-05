@@ -3,11 +3,13 @@ import { getTipoProductos } from "./actions/productoActions";
 import { saveCubicacionProductoBulto } from "./actions/saveCubicacionProductoBulto";
 import { saveCubicacionProductoContenedor } from "./actions/saveCubicacionProductoContenedor";
 import { getTipoContenedores } from "./actions/tipoContenedorActions";
+import { getTransporteClasificaciones, ITransporteClasificacion } from "./actions/transporteActions";
 import CubicacionUI from "./components/CubicacionUi";
 
 export default async function CubicacionPage() {
   const productos = await getTipoProductos();
   const contenedores = await getTipoContenedores();
+  const camiones: ITransporteClasificacion[] = await getTransporteClasificaciones();
 
   // 👇 Server Action para guardar cubicación unidad → bulto
   async function guardarBultoAction(formData: FormData) {
@@ -77,5 +79,5 @@ export default async function CubicacionPage() {
     });
   }
 
-  return <CubicacionUI contenedores={contenedores} productos={productos} />;
+  return <CubicacionUI contenedores={contenedores} productos={productos} camiones={camiones} />;
 }

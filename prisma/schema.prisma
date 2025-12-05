@@ -7,6 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum OrientacionForzada {
+  LARGO
+  ANCHO
+  ALTO
+}
+
 model TipoProducto {
   id                          Int       @id @default(autoincrement())
   division_servicio_id        Int
@@ -28,14 +34,15 @@ model TipoProducto {
   unidad_entra_por_bulto      Int
   alto_por_bulto              Int
   ancho_por_bulto             Int
-  largo_por_bulto              Int
+  largo_por_bulto             Int
   peso_por_bulto              Int
   volumen_por_bulto           Int
 
-  cubicaciones Cubicacion[]
-  contenedores TipoContenedorProducto[]
-  cubicacionProductoBulto CubicacionProductoBulto?  // <- opcional
+  cubicaciones                   Cubicacion[]
+  contenedores                   TipoContenedorProducto[]
+  cubicacionProductoBulto        CubicacionProductoBulto? // <- opcional
   cubicacionesProductoContenedor CubicacionProductoContenedor[]
+  reglasCubicacion               CubicacionRegla[]
 
   divisionServicio DivisionServicio @relation(fields: [division_servicio_id], references: [id])
 
@@ -43,33 +50,32 @@ model TipoProducto {
 }
 
 model CubicacionProductoBulto {
-  id               Int          @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   tipo_producto_id Int          @unique
   tipoProducto     TipoProducto @relation(fields: [tipo_producto_id], references: [id])
 
-  largo_unidad_mm  Int
-  ancho_unidad_mm  Int
-  alto_unidad_mm   Int
+  largo_unidad_mm Int
+  ancho_unidad_mm Int
+  alto_unidad_mm  Int
 
-  grosor_pared_mm  Int          @default(0)
+  grosor_pared_mm Int @default(0)
 
-  unidades_eje_x   Int
-  unidades_eje_y   Int
-  unidades_eje_z   Int
+  unidades_eje_x Int
+  unidades_eje_y Int
+  unidades_eje_z Int
 
-  ocupacion_interna Decimal     @default(0.0)
+  ocupacion_interna Decimal @default(0.0) @db.Decimal(5, 2)
 
-  orient_largo_mm  Int
-  orient_ancho_mm  Int
-  orient_alto_mm   Int
+  orient_largo_mm Int
+  orient_ancho_mm Int
+  orient_alto_mm  Int
 
-  created_at       DateTime     @default(now())
-  updated_at       DateTime     @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   @@map("cubicacion_producto_bulto")
 }
-
 
 model Cubicacion {
   id             Int      @id @default(autoincrement())
@@ -83,17 +89,17 @@ model Cubicacion {
 }
 
 model CubicacionProductoContenedor {
-  id                Int           @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   // Relación con producto y contenedor
-  tipo_producto_id  Int
+  tipo_producto_id   Int
   tipo_contenedor_id Int
 
-  tipoProducto      TipoProducto   @relation(fields: [tipo_producto_id], references: [id])
-  tipoContenedor    TipoContenedor @relation(fields: [tipo_contenedor_id], references: [id])
+  tipoProducto   TipoProducto   @relation(fields: [tipo_producto_id], references: [id])
+  tipoContenedor TipoContenedor @relation(fields: [tipo_contenedor_id], references: [id])
 
   // Parámetros usados en el cálculo
-  altura_max_carga_m Decimal?      // por si no usaste la altura total del contenedor
+  altura_max_carga_m Decimal? @db.Decimal(6, 2)
 
   // Resultado de cubicación (bultos ↔ pallet/contenedor)
   cajas_por_capa     Int
@@ -101,15 +107,14 @@ model CubicacionProductoContenedor {
   cajas_totales      Int
   productos_por_caja Int
   productos_totales  Int
-  ocupacion_volumen  Decimal       // % de ocupación volumétrica del contenedor
+  ocupacion_volumen  Decimal @db.Decimal(5, 2)
 
-  created_at         DateTime      @default(now())
-  updated_at         DateTime      @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   @@unique([tipo_producto_id, tipo_contenedor_id])
   @@map("cubicacion_producto_contenedor")
 }
-
 
 model TipoContenedor {
   id             Int       @id @default(autoincrement())
@@ -128,8 +133,9 @@ model TipoContenedor {
   peso_max_kg    Float
   peso_max_lts   Float
 
-  productos TipoContenedorProducto[]
+  productos                      TipoContenedorProducto[]
   cubicacionesProductoContenedor CubicacionProductoContenedor[]
+  cubicacionReglas               CubicacionRegla[]
 
   @@map("tipo_contenedor")
 }
@@ -219,6 +225,8 @@ model TransporteClase {
   descripcion     String
   clasificaciones TransporteClasificacion[]
 
+  transportes Transporte[]
+
   @@map("transporte_clase")
 }
 
@@ -241,5 +249,74 @@ model TransporteClasificacion {
   clase            TransporteClase? @relation(fields: [clase_transporte_id], references: [id])
   divisionServicio DivisionServicio @relation(fields: [division_servicio_id], references: [id])
 
+  transportes      Transporte[]
+  reglasCubicacion CubicacionRegla[]
+
   @@map("transporte_clasificacion")
+}
+
+model CubicacionRegla {
+  id Int @id @default(autoincrement())
+
+  empresaId                 Int  @map("empresa_id")
+  tipoProductoId            Int? @map("tipo_producto_id")
+  tipoContenedorId          Int? @map("tipo_contenedor_id")
+  transporteClasificacionId Int? @map("transporte_clasificacion_id")
+
+  maxCodigosPorPallet Int?                @map("max_codigos_por_pallet")
+  maxAlturaM          Decimal?            @map("max_altura_m") @db.Decimal(6, 2)
+  permitirMezcla      Boolean             @default(true) @map("permitir_mezcla")
+  orientacionForzada  OrientacionForzada? @map("orientacion_forzada")
+  observaciones       String?             @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  empresa                 empresa                  @relation(fields: [empresaId], references: [id])
+  tipoProducto            TipoProducto?            @relation(fields: [tipoProductoId], references: [id])
+  tipoContenedor          TipoContenedor?          @relation(fields: [tipoContenedorId], references: [id])
+  transporteClasificacion TransporteClasificacion? @relation(fields: [transporteClasificacionId], references: [id])
+
+  @@index([empresaId, tipoProductoId, tipoContenedorId, transporteClasificacionId], name: "idx_empresa_producto_contenedor_transporte")
+  @@map("cubicacion_regla")
+}
+
+model empresa {
+  id             Int    @id @default(autoincrement())
+  codigo_empresa String @db.VarChar(255)
+  razon_social   String @db.VarChar(255)
+
+  created_at DateTime  @default(now()) @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  habilitado Boolean   @default(true)
+
+  // Relaciones que SÍ usamos en cubicación
+  transporte       Transporte[]
+  cubicacionReglas CubicacionRegla[]
+
+  @@map("empresa")
+}
+
+model Transporte {
+  id Int @id @default(autoincrement())
+
+  empresaId                 Int  @map("empresa_id")
+  claseTransporteId         Int? @map("clase_de_transporte_id")
+  transporteClasificacionId Int? @map("transporte_clasificacion_id")
+
+  dominio     String @db.VarChar(255)
+  motor       String @db.VarChar(255)
+  chasis      String @db.VarChar(255)
+  ano         String @db.VarChar(255)
+  descripcion String @db.VarChar(255)
+
+  empresa                 empresa                  @relation(fields: [empresaId], references: [id])
+  claseTransporte         TransporteClase?         @relation(fields: [claseTransporteId], references: [id])
+  clasificacionTransporte TransporteClasificacion? @relation(fields: [transporteClasificacionId], references: [id])
+
+  @@index([empresaId], map: "IDX_TRANSPORTE_EMPRESA")
+  @@index([claseTransporteId], map: "IDX_336ADCB45F23D074")
+  @@index([transporteClasificacionId], map: "IDX_336ADCB4CLASF")
+  @@map("transporte")
 }

@@ -1,7 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { seedDivisionServicio } from "./seeds/seedDivisionServicio";
 import { seedTipoContenedor } from "./seeds/seedTipoContenedor";
-import { seedTipoProductoEjemplo } from "./seeds/seedTipoproductoEjemplo";
+import { seedTipoProductoEjemplo } from "./seeds/seedTipoProductoEjemplo";
 
 const prisma = new PrismaClient();
 

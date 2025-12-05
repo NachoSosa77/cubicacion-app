@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "seed:cubicacion-test": "tsx prisma/seed.cubicacion-test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

@@ -4,25 +4,36 @@
 import { useMemo, useState } from "react";
 import { ITipoProducto } from "../actions/productoActions";
 import { ITipoContenedor } from "../actions/tipoContenedorActions";
+import { ITransporteClasificacion } from "../actions/transporteActions";
 import {
   DimMm,
   calcularCubicacionBultosEnPallet,
+  calcularPalletsEnCajon,
+  calcularPalletsEnTransporte,
   calcularUnidadEnBulto,
 } from "../lib/cubicacion";
 import { CubicacionViewer3D } from "./CubicacionViewer3D";
 import { HighQualityPalletViewer3D } from "./HighQualityPalletViewer3D";
 import { ModoVisualToggle } from "./ModoVisualToggle";
+import { TruckViewer3D } from "./TruckViewer3D";
 
 interface Props {
   contenedores: ITipoContenedor[];
   productos: ITipoProducto[];
+  camiones: ITransporteClasificacion[];
 }
 
 type ModoVisual = "real" | "real_sep" | "didactico";
 
-export default function CubicacionUI({ contenedores, productos }: Props) {
-  const [productoId, setProductoId] = useState<number | "">("");
+export default function CubicacionUI({
+  contenedores,
+  productos,
+  camiones,
+}: Props) {
   const [contenedorId, setContenedorId] = useState<number | "">("");
+  const [productoId, setProductoId] = useState<number | "">("");
+  const [camionId, setCamionId] = useState<number | "">("");
+
   const [alturaMaxCarga, setAlturaMaxCarga] = useState<string>(""); // en metros, opcional
   const [largoUnidadMm, setLargoUnidadMm] = useState<string>("");
   const [anchoUnidadMm, setAnchoUnidadMm] = useState<string>("");
@@ -52,14 +63,19 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
     return { largo, ancho, alto };
   }, [largoUnidadMm, anchoUnidadMm, altoUnidadMm]);
 
+  const contenedorSeleccionado: ITipoContenedor | null = useMemo(
+    () => contenedores.find((c) => c.id === contenedorId) ?? null,
+    [contenedorId, contenedores]
+  );
+
   const productoSeleccionado = useMemo(
     () => productos.find((p) => p.id === productoId),
     [productoId, productos]
   );
 
-  const contenedorSeleccionado = useMemo(
-    () => contenedores.find((c) => c.id === contenedorId),
-    [contenedorId, contenedores]
+  const camionSeleccionado = useMemo(
+    () => camiones.find((t) => t.id === camionId),
+    [camionId, camiones]
   );
 
   // Grosor numérico seguro (si está vacío o mal → 0)
@@ -120,6 +136,59 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
       grosorParedMm: grosorNumerico,
     });
   }, [productoSeleccionado, dimUnidadMm, grosorNumerico]);
+
+  const resultadoPalletsEnCamion = useMemo(() => {
+    if (!resultado || !contenedorSeleccionado || !camionSeleccionado)
+      return null;
+
+    // Altura real de la “columna de carga” sobre el pallet:
+    const alturaMaxCargaNum =
+      alturaMaxCarga.trim() === "" ? undefined : Number(alturaMaxCarga);
+
+    const alturaCargaPallet =
+      alturaMaxCargaNum && !Number.isNaN(alturaMaxCargaNum)
+        ? Math.min(alturaMaxCargaNum, contenedorSeleccionado.alto_mts)
+        : contenedorSeleccionado.alto_mts;
+
+    return calcularPalletsEnCajon({
+      pallet: {
+        largo_mts: contenedorSeleccionado.largo_mts,
+        ancho_mts: contenedorSeleccionado.ancho_mts,
+        alto_mts: alturaCargaPallet,
+      },
+      cajon: {
+        largo_mts: camionSeleccionado.mt_largo_cub,
+        ancho_mts: camionSeleccionado.mt_ancho_cub,
+        alto_mts: camionSeleccionado.mt_alto_cub,
+      },
+      // podés exponer estos parámetros luego en la UI si el cliente lo pide
+      alturaMaxCargaM: undefined,
+      maxCapas: 1, // por defecto no apilamos pallets
+    });
+  }, [resultado, contenedorSeleccionado, camionSeleccionado, alturaMaxCarga]);
+
+  const resultadoPalletEnTransporte = useMemo(() => {
+    if (!contenedorSeleccionado || !camionSeleccionado || !resultado)
+      return null;
+
+    try {
+      return calcularPalletsEnTransporte({
+        contenedor: contenedorSeleccionado, // pallet
+        resultadoPallet: resultado, // ResultadoCubicacion
+        transporte: camionSeleccionado, // ITransporteClasificacion
+      });
+    } catch (e) {
+      console.error(e);
+      return null;
+    }
+  }, [contenedorSeleccionado, camionSeleccionado, resultado]);
+
+  const productosTotalesPorCamion = useMemo(() => {
+    if (!resultado || !resultadoPalletsEnCamion) return 0;
+
+    // productos por pallet * pallets por camión
+    return resultado.productosTotales * resultadoPalletsEnCamion.palletsTotales;
+  }, [resultado, resultadoPalletsEnCamion]);
 
   const gapFactor = useMemo(() => {
     switch (modoVisual) {
@@ -430,6 +499,46 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
         )}
       </section>
 
+      {/* Paso 3: selección de camión */}
+      <section className="bg-white rounded-lg shadow-sm p-4 md:p-6">
+        <h2 className="text-lg font-semibold mb-4">3. Elegir camión</h2>
+
+        {camiones.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            No hay camiones configurados. Revisá el seed de{" "}
+            <code>transporte</code> / <code>transporte_clasificacion</code>.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-slate-700">
+              Camión disponible
+            </label>
+            <select
+              className="w-full max-w-md border rounded-md px-3 py-2 text-sm"
+              value={camionId}
+              onChange={(e) =>
+                setCamionId(e.target.value === "" ? "" : Number(e.target.value))
+              }
+            >
+              <option value="">Seleccioná un camión</option>
+              {camiones.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {/* Ajustá estos campos según tu ITransporteClasificacion */}
+                  {t.denominacion_de_vehiculo} — {t.mt_largo_cub}m x{" "}
+                  {t.mt_ancho_cub}m x {t.mt_alto_cub}m (máx {t.max_peso_kg} kg)
+                </option>
+              ))}
+            </select>
+
+            <p className="text-xs text-slate-500">
+              Estas dimensiones corresponden al volumen útil de carga (
+              <code>mt_largo_cub</code>, <code>mt_ancho_cub</code>,{" "}
+              <code>mt_alto_cub</code>) que se usan para ubicar los pallets.
+            </p>
+          </div>
+        )}
+      </section>
+
       {/* Resultado de la cubicación + vista 3D (pallet) */}
       <section className="bg-white rounded-lg border border-slate-200 p-4 md:p-6 space-y-4">
         <h2 className="text-lg font-semibold mb-4">
@@ -446,9 +555,118 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
           </p>
         ) : (
           <>
+            {/* Datos numéricos principales */}
             <div className="grid gap-3 text-sm md:grid-cols-2">
-              {/* ... tus datos numéricos como ahora ... */}
+              <div className="space-y-1">
+                <p>
+                  <span className="font-medium">Cajas por capa:</span>{" "}
+                  {resultado.cajasPorCapa}{" "}
+                  <span className="text-xs text-slate-400">
+                    ({resultado.cajasPorLargo} a lo largo ×{" "}
+                    {resultado.cajasPorAncho} a lo ancho)
+                  </span>
+                </p>
+                <p>
+                  <span className="font-medium">Capas:</span> {resultado.capas}
+                </p>
+                <p>
+                  <span className="font-medium">Cajas totales por pallet:</span>{" "}
+                  {resultado.cajasTotales}
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p>
+                  <span className="font-medium">Productos por caja:</span>{" "}
+                  {resultado.productosPorCaja}
+                </p>
+                <p>
+                  <span className="font-medium">
+                    Productos totales por pallet:
+                  </span>{" "}
+                  {resultado.productosTotales}
+                </p>
+                <p>
+                  <span className="font-medium">Ocupación volumétrica:</span>{" "}
+                  {resultado.ocupacionVolumenPorcentaje.toFixed(1)} %
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p>
+                  <span className="font-medium">Volumen por bulto (m³):</span>{" "}
+                  {resultado.volumenBultoM3.toFixed(4)}
+                </p>
+                <p>
+                  <span className="font-medium">Volumen contenedor (m³):</span>{" "}
+                  {resultado.volumenContenedorM3.toFixed(4)}
+                </p>
+              </div>
             </div>
+
+            {/* Bloque de peso (solo si hay datos de peso) */}
+            {resultado.pesoPorBultoKg !== null && (
+              <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 border-t pt-3">
+                <div className="space-y-1">
+                  <p>
+                    <span className="font-medium">Peso por bulto (kg):</span>{" "}
+                    {resultado.pesoPorBultoKg.toFixed(2)}
+                  </p>
+                  {resultado.pesoMaximoPalletKg !== null && (
+                    <p>
+                      <span className="font-medium">
+                        Peso máximo permitido por pallet (kg):
+                      </span>{" "}
+                      {resultado.pesoMaximoPalletKg.toFixed(2)}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  {resultado.pesoTotalPalletKg !== null && (
+                    <p>
+                      <span className="font-medium">
+                        Peso total por pallet (kg):
+                      </span>{" "}
+                      <span
+                        className={
+                          resultado.excedePesoMaximo
+                            ? "font-semibold text-red-600"
+                            : "font-semibold text-emerald-600"
+                        }
+                      >
+                        {resultado.pesoTotalPalletKg.toFixed(2)}
+                      </span>
+                    </p>
+                  )}
+
+                  {resultado.usoPesoPorcentaje !== null &&
+                    resultado.pesoMaximoPalletKg !== null && (
+                      <p>
+                        <span className="font-medium">
+                          Uso de capacidad de peso del pallet:
+                        </span>{" "}
+                        <span
+                          className={
+                            resultado.excedePesoMaximo
+                              ? "font-semibold text-red-600"
+                              : "font-semibold text-emerald-600"
+                          }
+                        >
+                          {resultado.usoPesoPorcentaje.toFixed(1)} %
+                        </span>
+                      </p>
+                    )}
+
+                  {resultado.excedePesoMaximo && (
+                    <p className="text-xs text-red-600">
+                      ⚠ Esta configuración supera el peso máximo permitido para
+                      este pallet/contenedor.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Vista 3D de alta calidad del pallet + bultos */}
             <HighQualityPalletViewer3D
@@ -456,6 +674,110 @@ export default function CubicacionUI({ contenedores, productos }: Props) {
               contenedor={contenedorSeleccionado}
               resultado={resultado}
             />
+          </>
+        )}
+      </section>
+
+      {/* Paso 4: pallets ↔ camión */}
+      <section className="bg-white rounded-lg border border-slate-200 p-4 md:p-6 space-y-3">
+        <h2 className="text-lg font-semibold">4. Pallets dentro del camión</h2>
+
+        {!camionSeleccionado ? (
+          <p className="text-sm text-slate-500">
+            Seleccioná un camión para ver cuántos pallets entran.
+          </p>
+        ) : !resultadoPalletEnTransporte ? (
+          <p className="text-sm text-red-500">
+            Con las dimensiones actuales no entra ningún pallet en el camión.
+          </p>
+        ) : (
+          <>
+            <div className="grid gap-2 text-sm md:grid-cols-2">
+              <div className="space-y-1">
+                <p>
+                  Pallets por capa:{" "}
+                  <span className="font-mono">
+                    {resultadoPalletEnTransporte.palletsPorCapa} (
+                    {resultadoPalletEnTransporte.palletsPorLargo} a lo largo ×{" "}
+                    {resultadoPalletEnTransporte.palletsPorAncho} a lo ancho)
+                  </span>
+                </p>
+                <p>
+                  Capas de pallets (verticales):{" "}
+                  <span className="font-mono">
+                    {resultadoPalletEnTransporte.capas}
+                  </span>
+                </p>
+                <p>
+                  Pallets totales por camión:{" "}
+                  <span className="font-semibold">
+                    {resultadoPalletEnTransporte.palletsTotales}
+                  </span>
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p>
+                  Productos por pallet:{" "}
+                  <span className="font-mono">
+                    {resultadoPalletEnTransporte.productosPorPallet}
+                  </span>
+                </p>
+                <p>
+                  Productos totales por camión:{" "}
+                  <span className="font-semibold">
+                    {resultadoPalletEnTransporte.productosTotales}
+                  </span>
+                </p>
+                <p>
+                  Ocupación volumétrica camión:{" "}
+                  <span className="font-semibold">
+                    {resultadoPalletEnTransporte.ocupacionVolumenPorcentaje.toFixed(
+                      1
+                    )}
+                    %
+                  </span>
+                </p>
+                {resultadoPalletEnTransporte.pesoMaximoTransporteKg &&
+                  resultadoPalletEnTransporte.pesoTotalTransporteKg && (
+                    <p>
+                      Peso total carga:{" "}
+                      <span className="font-mono">
+                        {resultadoPalletEnTransporte.pesoTotalTransporteKg.toFixed(
+                          0
+                        )}{" "}
+                        kg
+                      </span>{" "}
+                      / máx{" "}
+                      <span className="font-mono">
+                        {resultadoPalletEnTransporte.pesoMaximoTransporteKg.toFixed(
+                          0
+                        )}{" "}
+                        kg
+                      </span>{" "}
+                      (
+                      {resultadoPalletEnTransporte.usoPesoPorcentaje?.toFixed(
+                        1
+                      )}
+                      %)
+                      {resultadoPalletEnTransporte.excedePesoMaximo && (
+                        <span className="ml-1 text-red-500 font-semibold">
+                          (¡excede el máximo!)
+                        </span>
+                      )}
+                    </p>
+                  )}
+              </div>
+            </div>
+            {camionSeleccionado && resultadoPalletEnTransporte && (
+              <div className="mt-4">
+                <TruckViewer3D
+                  transporte={camionSeleccionado}
+                  contenedor={contenedorSeleccionado}
+                  resultadoPalletEnTransporte={resultadoPalletEnTransporte}
+                />
+              </div>
+            )}
           </>
         )}
       </section>
