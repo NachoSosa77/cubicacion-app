@@ -57,6 +57,7 @@ interface ParametrosUnidadEnBulto {
   producto: ITipoProducto;
   dimUnidadMm: DimMm;
   grosorParedMm?: number; // por ahora opcional
+  dimExternaBultoMm?: DimMm; // opcional para usar un bulto genérico
 }
 
 export interface ResultadoPalletsEnCajon {
@@ -176,17 +177,23 @@ function getPesoMaximoPalletKg(contenedor: any): number | null {
 export function calcularUnidadEnBulto(
   params: ParametrosUnidadEnBulto
 ): ResultadoUnidadEnBulto | null {
-  const { producto, dimUnidadMm, grosorParedMm = 0 } = params;
+  const { producto, dimUnidadMm, grosorParedMm = 0, dimExternaBultoMm } = params;
 
   // 1) Dimensiones internas del bulto (mm) a partir de las externas del producto
   const g = Math.max(grosorParedMm, 0);
 
   const ajustarInterna = (externa: number) => Math.max(externa - 2 * g, 0); // never negative
 
+  const externas = dimExternaBultoMm ?? {
+    largo: producto.largo_por_bulto,
+    ancho: producto.ancho_por_bulto,
+    alto: producto.alto_por_bulto,
+  };
+
   const dimInternaBultoMm: DimMm = {
-    largo: ajustarInterna(producto.largo_por_bulto),
-    ancho: ajustarInterna(producto.ancho_por_bulto),
-    alto: ajustarInterna(producto.alto_por_bulto),
+    largo: ajustarInterna(externas.largo),
+    ancho: ajustarInterna(externas.ancho),
+    alto: ajustarInterna(externas.alto),
   };
 
   // 2) Calcular la mejor cubicación geométrica

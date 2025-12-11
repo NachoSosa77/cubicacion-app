@@ -17,6 +17,9 @@ type ItemState = {
   anchoUnidadMm: string;
   altoUnidadMm: string;
   grosorParedMm: string;
+  bultoLargoMm: string;
+  bultoAnchoMm: string;
+  bultoAltoMm: string;
 };
 
 interface Props {
@@ -45,6 +48,9 @@ export function MultiProductoConfigurator({
       anchoUnidadMm: "",
       altoUnidadMm: "",
       grosorParedMm: "",
+      bultoLargoMm: "",
+      bultoAnchoMm: "",
+      bultoAltoMm: "",
     },
   ]);
   const [descripcion, setDescripcion] = useState("");
@@ -63,25 +69,27 @@ export function MultiProductoConfigurator({
       const alto = numberOrNull(item.altoUnidadMm);
       const grosor = Math.max(numberOrNull(item.grosorParedMm) ?? 0, 0);
 
+      const bultoLargo = numberOrNull(item.bultoLargoMm) ?? producto?.largo_por_bulto ?? null;
+      const bultoAncho = numberOrNull(item.bultoAnchoMm) ?? producto?.ancho_por_bulto ?? null;
+      const bultoAlto = numberOrNull(item.bultoAltoMm) ?? producto?.alto_por_bulto ?? null;
+
       const dimensionesValidas =
         largo !== null && largo > 0 &&
         ancho !== null && ancho > 0 &&
         alto !== null && alto > 0;
 
       const resultadoUnidad =
-        producto && dimensionesValidas
+        producto && dimensionesValidas && bultoLargo && bultoAncho && bultoAlto
           ? calcularUnidadEnBulto({
               producto,
               dimUnidadMm: { largo, ancho, alto },
               grosorParedMm: grosor,
+              dimExternaBultoMm: { largo: bultoLargo, ancho: bultoAncho, alto: bultoAlto },
             })
           : null;
 
-      const volumenBultoM3 = producto
-        ? (producto.largo_por_bulto *
-            producto.ancho_por_bulto *
-            producto.alto_por_bulto) /
-          1_000_000_000
+      const volumenBultoM3 = bultoLargo && bultoAncho && bultoAlto
+        ? (bultoLargo * bultoAncho * bultoAlto) / 1_000_000_000
         : 0;
 
       const totalVolumen = cantidad && cantidad > 0 ? volumenBultoM3 * cantidad : 0;
@@ -165,6 +173,9 @@ export function MultiProductoConfigurator({
         anchoUnidadMm: "",
         altoUnidadMm: "",
         grosorParedMm: "",
+        bultoLargoMm: "",
+        bultoAnchoMm: "",
+        bultoAltoMm: "",
       },
     ]);
   };
@@ -176,6 +187,33 @@ export function MultiProductoConfigurator({
   const actualizarItem = (key: string, campo: keyof ItemState, valor: any) => {
     setItems((prev) =>
       prev.map((item) => (item.key === key ? { ...item, [campo]: valor } : item))
+    );
+  };
+
+  const seleccionarProducto = (key: string, productoId: number | "") => {
+    const producto = productos.find((p) => p.id === productoId);
+
+    setItems((prev) =>
+      prev.map((item) =>
+        item.key === key
+          ? {
+              ...item,
+              productoId,
+              bultoLargoMm:
+                item.bultoLargoMm === "" && producto
+                  ? String(producto.largo_por_bulto)
+                  : item.bultoLargoMm,
+              bultoAnchoMm:
+                item.bultoAnchoMm === "" && producto
+                  ? String(producto.ancho_por_bulto)
+                  : item.bultoAnchoMm,
+              bultoAltoMm:
+                item.bultoAltoMm === "" && producto
+                  ? String(producto.alto_por_bulto)
+                  : item.bultoAltoMm,
+            }
+          : item
+      )
     );
   };
 
@@ -196,6 +234,14 @@ export function MultiProductoConfigurator({
       if (!item.largoUnidadMm || !item.anchoUnidadMm || !item.altoUnidadMm) {
         mensajes.push(
           `Fila ${index + 1}: completá las dimensiones de la unidad en milímetros.`
+        );
+      }
+      if (
+        (item.bultoLargoMm !== "" || item.bultoAnchoMm !== "" || item.bultoAltoMm !== "") &&
+        (!Number(item.bultoLargoMm) || !Number(item.bultoAnchoMm) || !Number(item.bultoAltoMm))
+      ) {
+        mensajes.push(
+          `Fila ${index + 1}: completá las tres medidas externas del bulto si querés usar un tamaño genérico.`
         );
       }
     });
@@ -288,9 +334,8 @@ export function MultiProductoConfigurator({
                         className="w-full border rounded-md px-2 py-1"
                         value={item.productoId}
                         onChange={(e) =>
-                          actualizarItem(
+                          seleccionarProducto(
                             item.key,
-                            "productoId",
                             e.target.value === "" ? "" : Number(e.target.value)
                           )
                         }
@@ -309,6 +354,49 @@ export function MultiProductoConfigurator({
                           {detalle.producto.alto_por_bulto} mm
                         </p>
                       )}
+                      <div className="mt-2 space-y-1">
+                        <p className="text-[11px] font-medium text-slate-600">
+                          Reemplazar bulto (mm)
+                        </p>
+                        <div className="flex gap-1 text-[11px]">
+                          <input
+                            type="number"
+                            min={0.01}
+                            step="any"
+                            className="w-16 border rounded px-1 py-0.5"
+                            value={item.bultoLargoMm}
+                            onChange={(e) =>
+                              actualizarItem(item.key, "bultoLargoMm", e.target.value)
+                            }
+                            placeholder="L"
+                          />
+                          <input
+                            type="number"
+                            min={0.01}
+                            step="any"
+                            className="w-16 border rounded px-1 py-0.5"
+                            value={item.bultoAnchoMm}
+                            onChange={(e) =>
+                              actualizarItem(item.key, "bultoAnchoMm", e.target.value)
+                            }
+                            placeholder="A"
+                          />
+                          <input
+                            type="number"
+                            min={0.01}
+                            step="any"
+                            className="w-16 border rounded px-1 py-0.5"
+                            value={item.bultoAltoMm}
+                            onChange={(e) =>
+                              actualizarItem(item.key, "bultoAltoMm", e.target.value)
+                            }
+                            placeholder="H"
+                          />
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          Dejalo vacío para usar el bulto del producto. Útil para unificar varios códigos en un mismo embalaje.
+                        </p>
+                      </div>
                     </td>
                     <td className="px-3 py-2">
                       <input
@@ -325,7 +413,8 @@ export function MultiProductoConfigurator({
                     <td className="px-3 py-2">
                       <input
                         type="number"
-                        min={1}
+                        min={0.01}
+                        step="any"
                         className="w-24 border rounded-md px-2 py-1"
                         value={item.largoUnidadMm}
                         onChange={(e) =>
@@ -337,7 +426,8 @@ export function MultiProductoConfigurator({
                     <td className="px-3 py-2">
                       <input
                         type="number"
-                        min={1}
+                        min={0.01}
+                        step="any"
                         className="w-24 border rounded-md px-2 py-1"
                         value={item.anchoUnidadMm}
                         onChange={(e) =>
@@ -349,7 +439,8 @@ export function MultiProductoConfigurator({
                     <td className="px-3 py-2">
                       <input
                         type="number"
-                        min={1}
+                        min={0.01}
+                        step="any"
                         className="w-24 border rounded-md px-2 py-1"
                         value={item.altoUnidadMm}
                         onChange={(e) =>
@@ -362,6 +453,7 @@ export function MultiProductoConfigurator({
                       <input
                         type="number"
                         min={0}
+                        step="any"
                         className="w-24 border rounded-md px-2 py-1"
                         value={item.grosorParedMm}
                         onChange={(e) =>
