@@ -1,2 +1,4 @@
 26-11-2025 11:00 a 18:00hrs agregar espesor al producto(ok).
-01-12-2025 11:00 a 18:00grs continuar con los ajustes, pasar a camión.
+01-12-2025 11:00 a 18:00hrs continuar con los ajustes, pasar a camión.
+02-12-2025 11:00 a 18:00hrs medidas camiones, recreación 3D.
+05-12-2025 11:00 a 18:00hrs finalización calculos cubicación, corrección 3D.
