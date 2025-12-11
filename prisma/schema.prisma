@@ -103,10 +103,10 @@ model CubicacionProductoBultoItem {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  cubicacionProductoBulto CubicacionProductoBulto @relation(fields: [cubicacion_producto_bulto_id], references: [id])
-  tipoProducto             TipoProducto             @relation(fields: [tipo_producto_id], references: [id])
+  cubicacionProductoBulto CubicacionProductoBulto @relation(fields: [cubicacion_producto_bulto_id], references: [id], map: "cpb_item_cpb_fk")
+  tipoProducto             TipoProducto             @relation(fields: [tipo_producto_id], references: [id], map: "cpb_item_tp_fk")
 
-  @@unique([cubicacion_producto_bulto_id, tipo_producto_id])
+  @@unique([cubicacion_producto_bulto_id, tipo_producto_id], map: "cpb_item_unique")
   @@map("cubicacion_producto_bulto_item")
 }
 

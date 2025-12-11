@@ -16,12 +16,12 @@ CREATE TABLE `cubicacion_producto_bulto_item` (
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at` DATETIME(3) NOT NULL,
 
-    UNIQUE INDEX `cubicacion_producto_bulto_item_cubicacion_producto_bulto_id_tipo_producto_id_key`(`cubicacion_producto_bulto_id`, `tipo_producto_id`),
+    UNIQUE INDEX `cpb_item_unique`(`cubicacion_producto_bulto_id`, `tipo_producto_id`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- AddForeignKey
-ALTER TABLE `cubicacion_producto_bulto_item` ADD CONSTRAINT `cubicacion_producto_bulto_item_cubicacion_producto_bulto_id_fkey` FOREIGN KEY (`cubicacion_producto_bulto_id`) REFERENCES `cubicacion_producto_bulto`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE `cubicacion_producto_bulto_item` ADD CONSTRAINT `cpb_item_cpb_fk` FOREIGN KEY (`cubicacion_producto_bulto_id`) REFERENCES `cubicacion_producto_bulto`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `cubicacion_producto_bulto_item` ADD CONSTRAINT `cubicacion_producto_bulto_item_tipo_producto_id_fkey` FOREIGN KEY (`tipo_producto_id`) REFERENCES `tipo_producto`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE `cubicacion_producto_bulto_item` ADD CONSTRAINT `cpb_item_tp_fk` FOREIGN KEY (`tipo_producto_id`) REFERENCES `tipo_producto`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
