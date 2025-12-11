@@ -1,6 +1,9 @@
 // app/cubicacion/page.tsx
 import { getTipoProductos } from "./actions/productoActions";
-import { saveCubicacionProductoBulto } from "./actions/saveCubicacionProductoBulto";
+import {
+  SaveCubicacionProductoBultoItemInput,
+  saveCubicacionProductoBulto,
+} from "./actions/saveCubicacionProductoBulto";
 import { saveCubicacionProductoContenedor } from "./actions/saveCubicacionProductoContenedor";
 import { getTipoContenedores } from "./actions/tipoContenedorActions";
 import { getTransporteClasificaciones, ITransporteClasificacion } from "./actions/transporteActions";
@@ -29,19 +32,61 @@ export default async function CubicacionPage() {
     const orientAnchoMm = Number(formData.get("orientAnchoMm"));
     const orientAltoMm = Number(formData.get("orientAltoMm"));
 
+    const productosJson = formData.get("productos");
+    let productos: SaveCubicacionProductoBultoItemInput[] = [];
+
+    if (productosJson && typeof productosJson === "string") {
+      try {
+        const parsed = JSON.parse(productosJson);
+        if (Array.isArray(parsed)) {
+          productos = parsed.map((item) => ({
+            tipoProductoId: Number(item.tipoProductoId ?? tipoProductoId),
+            cantidad: Number(item.cantidad),
+            largoUnidadMm: Number(item.largoUnidadMm),
+            anchoUnidadMm: Number(item.anchoUnidadMm),
+            altoUnidadMm: Number(item.altoUnidadMm),
+            unidadesEjeX: Number(item.unidadesEjeX ?? unidadesEjeX),
+            unidadesEjeY: Number(item.unidadesEjeY ?? unidadesEjeY),
+            unidadesEjeZ: Number(item.unidadesEjeZ ?? unidadesEjeZ),
+            orientLargoMm: Number(item.orientLargoMm ?? orientLargoMm),
+            orientAnchoMm: Number(item.orientAnchoMm ?? orientAnchoMm),
+            orientAltoMm: Number(item.orientAltoMm ?? orientAltoMm),
+          }));
+        }
+      } catch (error) {
+        console.error("No se pudo parsear la lista de productos", error);
+      }
+    }
+
+    if (productos.length === 0) {
+      const cantidadUnidad = Number(formData.get("cantidadUnidad"));
+      const cantidadCalculada =
+        Number.isFinite(cantidadUnidad) && cantidadUnidad > 0
+          ? cantidadUnidad
+          : unidadesEjeX * unidadesEjeY * unidadesEjeZ;
+
+      productos = [
+        {
+          tipoProductoId,
+          cantidad: cantidadCalculada,
+          largoUnidadMm,
+          anchoUnidadMm,
+          altoUnidadMm,
+          unidadesEjeX,
+          unidadesEjeY,
+          unidadesEjeZ,
+          orientLargoMm,
+          orientAnchoMm,
+          orientAltoMm,
+        },
+      ];
+    }
+
     await saveCubicacionProductoBulto({
       tipoProductoId,
-      largoUnidadMm,
-      anchoUnidadMm,
-      altoUnidadMm,
       grosorParedMm,
-      unidadesEjeX,
-      unidadesEjeY,
-      unidadesEjeZ,
       ocupacionInterna,
-      orientLargoMm,
-      orientAnchoMm,
-      orientAltoMm,
+      productos,
     });
   }
 

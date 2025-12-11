@@ -41,6 +41,7 @@ model TipoProducto {
   cubicaciones                   Cubicacion[]
   contenedores                   TipoContenedorProducto[]
   cubicacionProductoBulto        CubicacionProductoBulto? // <- opcional
+  cubicacionProductoBultoItems   CubicacionProductoBultoItem[]
   cubicacionesProductoContenedor CubicacionProductoContenedor[]
   reglasCubicacion               CubicacionRegla[]
 
@@ -74,7 +75,39 @@ model CubicacionProductoBulto {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  items CubicacionProductoBultoItem[]
+
   @@map("cubicacion_producto_bulto")
+}
+
+model CubicacionProductoBultoItem {
+  id Int @id @default(autoincrement())
+
+  cubicacion_producto_bulto_id Int
+  tipo_producto_id             Int
+
+  cantidad Int
+
+  largo_unidad_mm Int
+  ancho_unidad_mm Int
+  alto_unidad_mm  Int
+
+  unidades_eje_x Int
+  unidades_eje_y Int
+  unidades_eje_z Int
+
+  orient_largo_mm Int
+  orient_ancho_mm Int
+  orient_alto_mm  Int
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  cubicacionProductoBulto CubicacionProductoBulto @relation(fields: [cubicacion_producto_bulto_id], references: [id])
+  tipoProducto             TipoProducto             @relation(fields: [tipo_producto_id], references: [id])
+
+  @@unique([cubicacion_producto_bulto_id, tipo_producto_id])
+  @@map("cubicacion_producto_bulto_item")
 }
 
 model Cubicacion {

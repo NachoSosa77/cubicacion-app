@@ -2,6 +2,26 @@
 
 import { prisma } from "@/lib/prisma";
 // 👇 Definimos un tipo liviano solo con lo que usamos en la vista
+export interface ICubicacionProductoBultoItem {
+  id: number;
+  tipo_producto_id: number;
+  cantidad: number;
+  largo_unidad_mm: number;
+  ancho_unidad_mm: number;
+  alto_unidad_mm: number;
+  unidades_eje_x: number;
+  unidades_eje_y: number;
+  unidades_eje_z: number;
+  orient_largo_mm: number;
+  orient_ancho_mm: number;
+  orient_alto_mm: number;
+  tipoProducto?: {
+    id: number;
+    codigo: string;
+    descripcion: string;
+  };
+}
+
 export interface ITipoProducto {
   id: number;
   codigo: string;
@@ -15,6 +35,10 @@ export interface ITipoProducto {
   largo_por_bulto: number;
   peso_por_bulto: number;
   volumen_por_bulto: number;
+  cubicacionProductoBulto?: {
+    id: number;
+    items: ICubicacionProductoBultoItem[];
+  } | null;
 }
 
 export async function getTipoProductos(): Promise<ITipoProducto[]> {
@@ -25,6 +49,23 @@ export async function getTipoProductos(): Promise<ITipoProducto[]> {
     },
     orderBy: {
       descripcion: "asc",
+    },
+    include: {
+      cubicacionProductoBulto: {
+        include: {
+          items: {
+            include: {
+              tipoProducto: {
+                select: {
+                  id: true,
+                  codigo: true,
+                  descripcion: true,
+                },
+              },
+            },
+          },
+        },
+      },
     },
   });
 

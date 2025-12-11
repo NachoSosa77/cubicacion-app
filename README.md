@@ -35,3 +35,33 @@ The easiest way to deploy your Next.js app is to use the [Vercel Platform](https
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
 # cubicacion-app
+
+## Guía rápida de Prisma (migraciones y seeds)
+
+Como la base de datos depende de migraciones Prisma, no es necesario crear carpetas a mano dentro de `prisma/migrations`. Sigue estos pasos:
+
+1. **Crear una nueva migración** (ejemplo: agregar una tabla pivote):
+   ```bash
+   npx prisma migrate dev --name add_cubicacion_producto_bulto_items
+   ```
+   Esto genera la carpeta y el `migration.sql` automáticamente, aplica los cambios a tu base local y actualiza el cliente de Prisma.
+
+2. **Aplicar migraciones existentes** en tu entorno (sin regenerar datos):
+   ```bash
+   npx prisma migrate dev
+   ```
+
+3. **Recrear la base desde cero y volver a sembrar datos** (útil si los datos viejos no cumplen las nuevas restricciones):
+   ```bash
+   npx prisma migrate reset
+   # Prisma ejecutará las migraciones y luego el seed configurado (por ejemplo, npm run seed)
+   ```
+
+4. **En producción/CI**, aplica sólo las migraciones sin tocar datos con:
+   ```bash
+   npx prisma migrate deploy
+   ```
+
+5. **Ejecutar seeds manualmente** si tu proyecto define scripts dedicados (p. ej. `npm run seed` o `npm run seed:cubicacion-test`) una vez aplicadas las migraciones.
+
+> Tip: No borres tablas ni uses `prisma db push` en lugar de migraciones. Siempre trabaja con el flujo de `migrate` para mantener el historial consistente.
