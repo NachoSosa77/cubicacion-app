@@ -5,9 +5,11 @@ import {
   saveCubicacionProductoBulto,
 } from "./actions/saveCubicacionProductoBulto";
 import { saveCubicacionProductoContenedor } from "./actions/saveCubicacionProductoContenedor";
+import { saveMultiProductoConfiguracion } from "./actions/saveMultiProductoConfiguracion";
 import { getTipoContenedores } from "./actions/tipoContenedorActions";
 import { getTransporteClasificaciones, ITransporteClasificacion } from "./actions/transporteActions";
 import CubicacionUI from "./components/CubicacionUi";
+import { MultiProductoConfigurator } from "./components/MultiProductoConfigurator";
 
 export default async function CubicacionPage() {
   const productos = await getTipoProductos();
@@ -124,5 +126,24 @@ export default async function CubicacionPage() {
     });
   }
 
-  return <CubicacionUI contenedores={contenedores} productos={productos} camiones={camiones} />;
+  async function guardarConfiguracionMultiProducto(input: {
+    descripcion?: string | null;
+    items: { tipoProductoId: number; cantidadBultos: number; volumenTotalM3: number }[];
+  }) {
+    "use server";
+
+    await saveMultiProductoConfiguracion(input);
+  }
+
+  return (
+    <div className="space-y-6">
+      <MultiProductoConfigurator
+        productos={productos}
+        contenedores={contenedores}
+        onSubmit={guardarConfiguracionMultiProducto}
+      />
+
+      <CubicacionUI contenedores={contenedores} productos={productos} camiones={camiones} />
+    </div>
+  );
 }
