@@ -115,6 +115,7 @@ model Cubicacion {
   createdAt      DateTime @default(now())
   descripcion    String?
   tipoProductoId Int
+  cantidad_unidades Int     
   cantidadBultos Int
   volumenTotalM3 Float
 
@@ -327,8 +328,42 @@ model empresa {
   // Relaciones que SÍ usamos en cubicación
   transporte       Transporte[]
   cubicacionReglas CubicacionRegla[]
+  
+  bultos EmpresaBulto[]
 
   @@map("empresa")
+}
+
+model EmpresaBulto {
+  id         Int      @id @default(autoincrement())
+  created_at DateTime @default(now()) @db.DateTime(0)
+  updated_at DateTime @updatedAt @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  habilitado Boolean  @default(true)
+
+  empresa_id Int
+  empresa    empresa  @relation(fields: [empresa_id], references: [id], onDelete: Cascade)
+
+  codigo      String  @db.VarChar(100)   // ej: "CAJA-40x30x25"
+  descripcion String? @db.VarChar(255)
+
+  // Dimensiones EXTERNAS (mm)
+  largo_mm Int
+  ancho_mm Int
+  alto_mm  Int
+
+  // Espesor de pared (mm) - único valor
+  espesor_pared_mm Int @default(0)
+
+  // Opcional: pesos
+  tara_kg     Float?
+  max_peso_kg Float?
+
+  es_preferido Boolean @default(false)
+
+  @@unique([empresa_id, codigo])
+  @@index([empresa_id, habilitado])
+  @@map("empresa_bulto")
 }
 
 model Transporte {

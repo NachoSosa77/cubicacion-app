@@ -1,9 +1,11 @@
+// src/app/cubicacion/actions/saveMultiProductoConfiguracion.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
 
 export interface MultiProductoConfiguracionItemInput {
   tipoProductoId: number;
+  cantidadUnidades: number;
   cantidadBultos: number;
   volumenTotalM3: number;
 }
@@ -20,20 +22,17 @@ export async function saveMultiProductoConfiguracion(
     throw new Error("No hay ítems para guardar");
   }
 
-  const itemsToSave = input.items.map((item) => {
-    if (!item.tipoProductoId || item.cantidadBultos <= 0) {
-      throw new Error("Datos de producto inválidos");
-    }
-
-    return prisma.cubicacion.create({
+  const itemsToSave = input.items.map((item) =>
+    prisma.cubicacion.create({
       data: {
         descripcion: input.descripcion ?? null,
         tipoProductoId: item.tipoProductoId,
+        cantidad_unidades: item.cantidadUnidades,
         cantidadBultos: item.cantidadBultos,
         volumenTotalM3: item.volumenTotalM3,
       },
-    });
-  });
+    })
+  );
 
   return prisma.$transaction(itemsToSave);
 }
