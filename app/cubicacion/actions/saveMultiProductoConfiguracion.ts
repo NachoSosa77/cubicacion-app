@@ -2,6 +2,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import type { PackingPolicy } from "../lib/packing-policy";
 
 export interface MultiProductoConfiguracionItemInput {
   tipoProductoId: number;
@@ -12,6 +13,9 @@ export interface MultiProductoConfiguracionItemInput {
 
 export interface MultiProductoConfiguracionInput {
   descripcion?: string | null;
+  packingPolicy: PackingPolicy;
+  tipoBulto: "PRODUCTO_ESTANDAR" | "EMPRESA_BULTO";
+  bultoEmpresaId?: number | null;
   items: MultiProductoConfiguracionItemInput[];
 }
 
@@ -22,17 +26,24 @@ export async function saveMultiProductoConfiguracion(
     throw new Error("No hay ítems para guardar");
   }
 
-  const itemsToSave = input.items.map((item) =>
-    prisma.cubicacion.create({
-      data: {
-        descripcion: input.descripcion ?? null,
-        tipoProductoId: item.tipoProductoId,
-        cantidad_unidades: item.cantidadUnidades,
-        cantidadBultos: item.cantidadBultos,
-        volumenTotalM3: item.volumenTotalM3,
-      },
-    })
-  );
+  return prisma.$transaction(
+    input.items.map((item) =>
+      prisma.cubicacion.create({
+        data: {
+          descripcion: input.descripcion ?? null,
 
-  return prisma.$transaction(itemsToSave);
+          // 🔑 decisiones operativas
+          packing_policy: input.packingPolicy,
+          tipo_bulto: input.tipoBulto,
+          bulto_empresa_id: input.bultoEmpresaId ?? null,
+
+          // 🔢 datos de cálculo
+          tipoProductoId: item.tipoProductoId,
+          cantidad_unidades: item.cantidadUnidades,
+          cantidadBultos: item.cantidadBultos,
+          volumenTotalM3: item.volumenTotalM3,
+        },
+      })
+    )
+  );
 }

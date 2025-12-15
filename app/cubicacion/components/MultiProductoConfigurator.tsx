@@ -13,6 +13,7 @@ import {
   evaluarTopBultosEmpresa,
   MultiProductoUnidadInputReal,
 } from "../lib/evaluar-bultos-empresa";
+import { PACKING_POLICY_LABELS, PackingPolicy } from "../lib/packing-policy";
 import type { CubicacionBulto3DInput, DimMm } from "../types/cubicacion-3d";
 import { CubicacionBultoViewer3D } from "./CubicacionBultoViewer3D";
 
@@ -42,11 +43,15 @@ type OpcionCubicacion = {
   titulo: string;
   subtitulo?: string;
 
-  // Métricas empresariales (para fascinar, sin confundir)
+  // Nota: para PRODUCTO_ESTANDAR lo anulamos (Regla 1)
   ocupacionPct?: number | null;
+
   unidadesTotales: number;
   unidadesEnBulto1: number;
   bultosNecesariosEstimados: number;
+
+  // Meta opcional para persistir selección de bulto empresa
+  bultoEmpresaId?: number;
 
   data3d: CubicacionBulto3DInput;
 };
@@ -146,8 +151,11 @@ export function MultiProductoConfigurator({
     null
   );
 
+  const [packingPolicy, setPackingPolicy] =
+    useState<PackingPolicy>("OPERATIVO_AGRUPADO");
+
   /* ============================
-     UI handlers (tabla)
+     UI handlers
   ============================ */
 
   const agregarFila = () => {
@@ -249,13 +257,14 @@ export function MultiProductoConfigurator({
   const isMultiProducto = itemsMultiReal.length >= 2;
 
   /* ============================
-     TOP bultos empresa (1 o más productos)
+     TOP bultos empresa
+     ✅ ahora depende de packingPolicy
   ============================ */
 
   const topBultosEmpresa = useMemo(() => {
     if (!itemsMultiReal.length) return [];
-    return evaluarTopBultosEmpresa(itemsMultiReal, bultosEmpresa, 3);
-  }, [itemsMultiReal, bultosEmpresa]);
+    return evaluarTopBultosEmpresa(itemsMultiReal, bultosEmpresa, 3, packingPolicy);
+  }, [itemsMultiReal, bultosEmpresa, packingPolicy]);
 
   /* ============================
      Opciones unificadas
@@ -265,7 +274,7 @@ export function MultiProductoConfigurator({
     if (!itemsMultiReal.length) return [];
 
     const out: OpcionCubicacion[] = [];
-    const unidadesTotales = itemsMultiReal.reduce(
+    const unidadesTotalesAll = itemsMultiReal.reduce(
       (acc, it) => acc + it.cantidadUnidades,
       0
     );
@@ -299,12 +308,11 @@ export function MultiProductoConfigurator({
 
             const cap = gridCapacity(dimInterna, it.dimUnidadMm);
             const unidadesEnBulto1 = Math.min(it.cantidadUnidades, cap);
-            const bultosNecesariosEstimados = cap > 0 ? ceilDiv(it.cantidadUnidades, cap) : 999999;
+            const bultosNecesariosEstimados =
+              cap > 0 ? ceilDiv(it.cantidadUnidades, cap) : 999999;
 
-            const ocupacionPct =
-              typeof (res as any).ocupacionVolumenInterno === "number"
-                ? (res as any).ocupacionVolumenInterno
-                : null;
+            // Regla 1: NO mostrar ocupación para bulto estándar (pack cerrado)
+            const ocupacionPct = null;
 
             const placements = buildGridPlacements(dimInterna, it.dimUnidadMm, unidadesEnBulto1);
 
@@ -319,7 +327,8 @@ export function MultiProductoConfigurator({
               contenido: placements.map((pos) => ({
                 productoId: it.productoId,
                 codigo:
-                  (typeof it.codigoProducto === "string" && it.codigoProducto.trim()) ||
+                  (typeof it.codigoProducto === "string" &&
+                    it.codigoProducto.trim()) ||
                   `PROD-${it.productoId}`,
                 unidades: 1,
                 dimUnidadMm: it.dimUnidadMm,
@@ -327,14 +336,16 @@ export function MultiProductoConfigurator({
               })),
             };
 
+            const codigo = String((producto as any).codigo ?? "").trim();
+
             out.push({
               kind: "PRODUCTO_ESTANDAR",
               key: `producto-std-${producto.id}`,
-              titulo: `Bulto estándar · ${String((producto as any).codigo ?? "").trim() || "Producto"}`,
-              subtitulo: `Desde tipo_producto: ${bL}×${bA}×${bH} mm`,
+              titulo: `Bulto estándar (producto) · ${codigo || "Producto"}`,
+              subtitulo: `Pack definido por el producto · ${bL}×${bA}×${bH} mm`,
               ocupacionPct,
               unidadesTotales: it.cantidadUnidades,
-              unidadesEnBulto1: unidadesEnBulto1,
+              unidadesEnBulto1,
               bultosNecesariosEstimados,
               data3d,
             });
@@ -346,8 +357,25 @@ export function MultiProductoConfigurator({
     // ===== 2) Opciones empresa (1 o más productos) — usa packing3D (fiel)
     for (const opt of topBultosEmpresa) {
       if (!opt?.packing3D) continue;
-
       const p3d = opt.packing3D;
+
+        console.log("==== DEBUG BULTO EMPRESA ====");
+  console.log("BULTO:", opt.bulto.codigo);
+  console.log("DIM INTERNA:", p3d.dimInternaMm);
+  console.log(
+    "INSTRUCCIONES:",
+    p3d.instrucciones.map((i) => ({
+      codigo: i.codigo,
+      unidadesEnBulto1: i.unidadesEnBulto1,
+      capacidadSolo: i.capacidadTeoricaSiSolo,
+      orientacion: i.orientacionMm,
+    }))
+  );
+  console.log(
+    "PLACEMENTS:",
+    p3d.placementsBulto1.map((p) => p.codigo)
+  );
+
 
       const data3d: CubicacionBulto3DInput = {
         bulto: {
@@ -368,25 +396,29 @@ export function MultiProductoConfigurator({
         })),
       };
 
+      const codigoB =
+        String((opt as any).bulto?.codigo ?? "").trim() || "Sin código";
+
       out.push({
         kind: "EMPRESA_BULTO",
         key: `empresa-${(opt as any).bulto?.id ?? Math.random()}`,
-        titulo: `Bulto empresa · ${String((opt as any).bulto?.codigo ?? "").trim() || "Sin código"}`,
+        bultoEmpresaId: (opt as any).bulto?.id ?? undefined,
+        titulo: `Bulto empresa · ${codigoB}`,
         subtitulo: isMultiProducto
-          ? "Sugerido por cubicación empresa (multi-producto)"
-          : "Sugerido por cubicación empresa (1 producto)",
+          ? `Contenedor logístico · Multi-producto · ${PACKING_POLICY_LABELS[packingPolicy].titulo}`
+          : `Contenedor logístico · 1 producto · ${PACKING_POLICY_LABELS[packingPolicy].titulo}`,
         ocupacionPct:
           typeof p3d.ocupacionVolumetricaPct === "number"
             ? p3d.ocupacionVolumetricaPct
             : null,
-        unidadesTotales: p3d.unidadesTotales ?? unidadesTotales,
+        unidadesTotales: p3d.unidadesTotales ?? unidadesTotalesAll,
         unidadesEnBulto1: p3d.unidadesEnBulto1,
         bultosNecesariosEstimados: p3d.bultosNecesariosEstimados,
         data3d,
       });
     }
 
-    // Deduplicación por dims externas (evita repetidas)
+    // Deduplicación por dims externas
     const seen = new Set<string>();
     const dedup: OpcionCubicacion[] = [];
     for (const o of out) {
@@ -398,7 +430,11 @@ export function MultiProductoConfigurator({
     }
 
     return dedup;
-  }, [itemsMultiReal, productos, items, topBultosEmpresa, isMultiProducto]);
+  }, [itemsMultiReal, productos, items, topBultosEmpresa, isMultiProducto, packingPolicy]);
+
+  /* ============================
+     Mantener/ajustar selección
+  ============================ */
 
   useEffect(() => {
     setOpcionSeleccionada((prev) => {
@@ -408,6 +444,19 @@ export function MultiProductoConfigurator({
       return prev >= opciones.length ? null : prev;
     });
   }, [opciones.length]);
+
+  const selectedOpt =
+    opcionSeleccionada !== null ? opciones[opcionSeleccionada] : null;
+
+  const selectedIsStd = selectedOpt?.kind === "PRODUCTO_ESTANDAR";
+  const selectedIsEmpresa = selectedOpt?.kind === "EMPRESA_BULTO";
+
+  // ✅ si el usuario selecciona bulto estándar, policy no aplica → se fuerza a OPERATIVO_AGRUPADO
+  useEffect(() => {
+    if (selectedIsStd && packingPolicy !== "OPERATIVO_AGRUPADO") {
+      setPackingPolicy("OPERATIVO_AGRUPADO");
+    }
+  }, [selectedIsStd, packingPolicy]);
 
   const preview3DData = useMemo((): CubicacionBulto3DInput | null => {
     if (opcionSeleccionada === null) return null;
@@ -428,9 +477,12 @@ export function MultiProductoConfigurator({
     const mensajes: string[] = [];
 
     items.forEach((item, idx) => {
-      if (item.productoId === "") mensajes.push(`Fila ${idx + 1}: seleccioná un producto.`);
+      if (item.productoId === "")
+        mensajes.push(`Fila ${idx + 1}: seleccioná un producto.`);
       if (!item.cantidadUnidades || Number(item.cantidadUnidades) <= 0) {
-        mensajes.push(`Fila ${idx + 1}: indicá cantidad de unidades (número positivo).`);
+        mensajes.push(
+          `Fila ${idx + 1}: indicá cantidad de unidades (número positivo).`
+        );
       }
       if (!item.largoUnidadMm || !item.anchoUnidadMm || !item.altoUnidadMm) {
         mensajes.push(`Fila ${idx + 1}: completá largo/ancho/alto en mm.`);
@@ -448,7 +500,9 @@ export function MultiProductoConfigurator({
     });
 
     if (hayProductosDuplicados) {
-      mensajes.push("Hay productos duplicados. Cada fila debe usar un producto distinto.");
+      mensajes.push(
+        "Hay productos duplicados. Cada fila debe usar un producto distinto."
+      );
     }
 
     if (mensajes.length) {
@@ -463,8 +517,10 @@ export function MultiProductoConfigurator({
       return;
     }
 
-    if (opcionSeleccionada === null) {
-      setErrores(["Seleccioná una opción de bulto para previsualizar antes de guardar."]);
+    if (opcionSeleccionada === null || !selectedOpt) {
+      setErrores([
+        "Seleccioná una opción de bulto para previsualizar antes de guardar.",
+      ]);
       return;
     }
 
@@ -473,12 +529,14 @@ export function MultiProductoConfigurator({
       return;
     }
 
-    const itemsToSave: MultiProductoConfiguracionItemInput[] = itemsMultiReal.map((i) => ({
-      tipoProductoId: i.productoId,
-      cantidadUnidades: i.cantidadUnidades,
-      cantidadBultos: 1, // luego lo ajustamos cuando guardemos bultos reales
-      volumenTotalM3: i.volumenUnidadM3 * i.cantidadUnidades,
-    }));
+    const itemsToSave: MultiProductoConfiguracionItemInput[] = itemsMultiReal.map(
+      (i) => ({
+        tipoProductoId: i.productoId,
+        cantidadUnidades: i.cantidadUnidades,
+        cantidadBultos: 1,
+        volumenTotalM3: i.volumenUnidadM3 * i.cantidadUnidades,
+      })
+    );
 
     if (!itemsToSave.length) {
       setErrores(["No hay filas válidas para guardar."]);
@@ -487,10 +545,22 @@ export function MultiProductoConfigurator({
 
     startTransition(async () => {
       try {
-        await onSubmit({
+        const payload: MultiProductoConfiguracionInput = {
           descripcion: descripcion.trim() || null,
+
+          // ✅ decisiones operativas (persistibles)
+          packingPolicy: selectedIsEmpresa ? packingPolicy : "OPERATIVO_AGRUPADO",
+          tipoBulto: selectedOpt.kind,
+          bultoEmpresaId:
+            selectedOpt.kind === "EMPRESA_BULTO"
+              ? selectedOpt.bultoEmpresaId ?? null
+              : null,
+
+          // ✅ ítems
           items: itemsToSave,
-        });
+        };
+
+        await onSubmit(payload);
         setMensaje("Configuración guardada correctamente.");
       } catch (err) {
         console.error(err);
@@ -503,20 +573,21 @@ export function MultiProductoConfigurator({
      Render
   ============================ */
 
-  const selectedOpt = opcionSeleccionada !== null ? opciones[opcionSeleccionada] : null;
-
   return (
     <section className="space-y-6 bg-white p-6 rounded-lg shadow-sm">
       <header className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Cubicación empresa</h2>
           <p className="text-sm text-slate-600">
-            Cargá productos y dimensiones. El sistema compara bultos y exige previsualización 3D antes de guardar.
+            Cargá productos y dimensiones. El sistema compara bultos y exige
+            previsualización 3D antes de guardar.
           </p>
         </div>
 
         <div className="space-y-1 text-sm">
-          <label className="block text-slate-700 font-medium">Descripción (opcional)</label>
+          <label className="block text-slate-700 font-medium">
+            Descripción (opcional)
+          </label>
           <input
             className="w-full md:w-80 border rounded-md px-3 py-2 text-sm"
             value={descripcion}
@@ -550,13 +621,17 @@ export function MultiProductoConfigurator({
                       className="w-full border rounded-md px-2 py-1"
                       value={item.productoId}
                       onChange={(e) =>
-                        seleccionarProducto(item.key, e.target.value === "" ? "" : Number(e.target.value))
+                        seleccionarProducto(
+                          item.key,
+                          e.target.value === "" ? "" : Number(e.target.value)
+                        )
                       }
                     >
                       <option value="">Seleccioná</option>
                       {productos.map((prod) => (
                         <option key={prod.id} value={prod.id}>
-                          {String((prod as any).codigo ?? "").trim()} — {String((prod as any).descripcion ?? "")}
+                          {String((prod as any).codigo ?? "").trim()} —{" "}
+                          {String((prod as any).descripcion ?? "")}
                         </option>
                       ))}
                     </select>
@@ -568,7 +643,9 @@ export function MultiProductoConfigurator({
                       min={1}
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.cantidadUnidades}
-                      onChange={(e) => actualizarItem(item.key, "cantidadUnidades", e.target.value)}
+                      onChange={(e) =>
+                        actualizarItem(item.key, "cantidadUnidades", e.target.value)
+                      }
                       placeholder="Ej: 20"
                     />
                   </td>
@@ -580,7 +657,9 @@ export function MultiProductoConfigurator({
                       step="any"
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.largoUnidadMm}
-                      onChange={(e) => actualizarItem(item.key, "largoUnidadMm", e.target.value)}
+                      onChange={(e) =>
+                        actualizarItem(item.key, "largoUnidadMm", e.target.value)
+                      }
                       placeholder="L"
                     />
                   </td>
@@ -592,7 +671,9 @@ export function MultiProductoConfigurator({
                       step="any"
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.anchoUnidadMm}
-                      onChange={(e) => actualizarItem(item.key, "anchoUnidadMm", e.target.value)}
+                      onChange={(e) =>
+                        actualizarItem(item.key, "anchoUnidadMm", e.target.value)
+                      }
                       placeholder="A"
                     />
                   </td>
@@ -604,7 +685,9 @@ export function MultiProductoConfigurator({
                       step="any"
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.altoUnidadMm}
-                      onChange={(e) => actualizarItem(item.key, "altoUnidadMm", e.target.value)}
+                      onChange={(e) =>
+                        actualizarItem(item.key, "altoUnidadMm", e.target.value)
+                      }
                       placeholder="H"
                     />
                   </td>
@@ -616,7 +699,9 @@ export function MultiProductoConfigurator({
                       step="any"
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.grosorParedMm}
-                      onChange={(e) => actualizarItem(item.key, "grosorParedMm", e.target.value)}
+                      onChange={(e) =>
+                        actualizarItem(item.key, "grosorParedMm", e.target.value)
+                      }
                       placeholder="0"
                     />
                     <p className="text-[11px] text-slate-500 mt-1">Opcional.</p>
@@ -650,7 +735,9 @@ export function MultiProductoConfigurator({
 
           <div className="text-xs text-slate-500">
             Seleccionados: {productosSeleccionadosCount} ·{" "}
-            {isMultiProducto ? "Comparación multi-producto" : "Comparación 1 producto + bultos empresa"}
+            {isMultiProducto
+              ? "Comparación multi-producto"
+              : "Comparación 1 producto + bultos empresa"}
           </div>
         </div>
 
@@ -662,6 +749,7 @@ export function MultiProductoConfigurator({
             <div className="grid gap-3 md:grid-cols-3">
               {opciones.map((opt, idx) => {
                 const selected = opcionSeleccionada === idx;
+                const esStd = opt.kind === "PRODUCTO_ESTANDAR";
 
                 return (
                   <button
@@ -692,14 +780,26 @@ export function MultiProductoConfigurator({
                       </p>
                       <p>
                         Bultos estimados:{" "}
-                        <span className="font-semibold">{opt.bultosNecesariosEstimados}</span>
-                      </p>
-                      <p>
-                        Ocupación:{" "}
                         <span className="font-semibold">
-                          {typeof opt.ocupacionPct === "number" ? `${opt.ocupacionPct.toFixed(1)}%` : "N/D"}
+                          {opt.bultosNecesariosEstimados}
                         </span>
                       </p>
+
+                      {esStd ? (
+                        <p>
+                          Tipo de pack:{" "}
+                          <span className="font-semibold">Cerrado (producto)</span>
+                        </p>
+                      ) : (
+                        <p>
+                          Ocupación:{" "}
+                          <span className="font-semibold">
+                            {typeof opt.ocupacionPct === "number"
+                              ? `${opt.ocupacionPct.toFixed(1)}%`
+                              : "N/D"}
+                          </span>
+                        </p>
+                      )}
                     </div>
                   </button>
                 );
@@ -714,10 +814,12 @@ export function MultiProductoConfigurator({
           </div>
         )}
 
-        {/* Panel de decisión (cuando hay opción seleccionada) */}
+        {/* Panel de decisión */}
         {selectedOpt && (
           <div className="rounded-md border bg-slate-50 p-3 text-sm">
-            <p className="font-semibold text-slate-900">Resumen de la opción seleccionada</p>
+            <p className="font-semibold text-slate-900">
+              Resumen de la opción seleccionada
+            </p>
             <div className="mt-2 grid gap-2 md:grid-cols-3 text-sm">
               <div>
                 <p className="text-slate-600">Entran en bulto 1</p>
@@ -730,14 +832,50 @@ export function MultiProductoConfigurator({
                 <p className="font-semibold">{selectedOpt.bultosNecesariosEstimados}</p>
               </div>
               <div>
-                <p className="text-slate-600">Ocupación</p>
+                <p className="text-slate-600">
+                  {selectedIsStd ? "Tipo de pack" : "Ocupación"}
+                </p>
                 <p className="font-semibold">
-                  {typeof selectedOpt.ocupacionPct === "number"
+                  {selectedIsStd
+                    ? "Cerrado (producto)"
+                    : typeof selectedOpt.ocupacionPct === "number"
                     ? `${selectedOpt.ocupacionPct.toFixed(1)}%`
                     : "No disponible"}
                 </p>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ✅ Packing policy: SOLO para bulto empresa */}
+        {selectedIsEmpresa && (
+          <div className="rounded-md border bg-white p-3 space-y-2">
+            <p className="text-sm font-semibold text-slate-900">
+              Estrategia de llenado del bulto (packing policy)
+            </p>
+
+            {(
+              ["OPERATIVO_AGRUPADO", "OPTIMIZAR_VOLUMEN", "BUSCAR_MEJOR_ACOMODO"] as PackingPolicy[]
+            ).map((policy) => (
+              <label key={policy} className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  checked={packingPolicy === policy}
+                  onChange={() => setPackingPolicy(policy)}
+                />
+                <span>
+                  <strong>{PACKING_POLICY_LABELS[policy].titulo}</strong>
+                  <br />
+                  <span className="text-xs text-slate-500">
+                    {PACKING_POLICY_LABELS[policy].descripcion}
+                  </span>
+                </span>
+              </label>
+            ))}
+
+            <p className="text-[11px] text-slate-500">
+              Cambiar la estrategia recalcula el layout del primer bulto (preview fiel).
+            </p>
           </div>
         )}
 
@@ -747,7 +885,21 @@ export function MultiProductoConfigurator({
             <p className="text-sm font-medium text-slate-700">
               Previsualización 3D de la opción seleccionada
             </p>
+
+            {selectedIsStd && (
+              <div className="text-xs text-slate-600">
+                <p className="font-semibold text-slate-700">
+                  Bulto estándar del producto (pack cerrado)
+                </p>
+                <p>Este bulto corresponde a un pack definido por el producto.</p>
+                <p>
+                  El espacio visible en la visualización no representa capacidad disponible.
+                </p>
+              </div>
+            )}
+
             <CubicacionBultoViewer3D data={preview3DData} />
+
             <p className="text-xs text-slate-500">
               La visualización es fiel al layout calculado (no se recalcula en el viewer).
             </p>

@@ -65,3 +65,4 @@ Como la base de datos depende de migraciones Prisma, no es necesario crear carpe
 5. **Ejecutar seeds manualmente** si tu proyecto define scripts dedicados (p. ej. `npm run seed` o `npm run seed:cubicacion-test`) una vez aplicadas las migraciones.
 
 > Tip: No borres tablas ni uses `prisma db push` en lugar de migraciones. Siempre trabaja con el flujo de `migrate` para mantener el historial consistente.
+
