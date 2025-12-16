@@ -99,7 +99,7 @@ export function CubicacionPalletViewer3D({
   const camDist = mmToM(maxDim * 1.6);
 
   return (
-    <div className="w-full h-[420px] rounded-md border bg-slate-100">
+    <div className="w-full h-105 rounded-md border bg-slate-100">
       <Canvas
         camera={{
           position: [camDist, camDist, camDist],
