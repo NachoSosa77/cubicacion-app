@@ -67,6 +67,22 @@ export type EvaluacionBultoEmpresa = {
 };
 
 /* ============================
+   Debug helper
+============================ */
+
+// Si esto corre en server actions / RSC, podés usar process.env.DEBUG_PACKING
+const DEBUG_PACKING =
+  typeof process !== "undefined" &&
+  (process.env.NEXT_PUBLIC_DEBUG_PACKING === "true" ||
+    process.env.DEBUG_PACKING === "true");
+
+function dbg(...args: any[]) {
+  if (!DEBUG_PACKING) return;
+  // eslint-disable-next-line no-console
+  console.log(...args);
+}
+
+/* ============================
    Utils geométricos
 ============================ */
 
@@ -92,12 +108,6 @@ function volumenM3(d: DimMm): number {
   return (d.largo * d.ancho * d.alto) / 1_000_000_000;
 }
 
-function entraEnBulto(dimUnidad: DimMm, di: DimMm): boolean {
-  return orientaciones(dimUnidad).some(
-    (o) => o.largo <= di.largo && o.ancho <= di.ancho && o.alto <= di.alto
-  );
-}
-
 function capacidadGrid(orient: DimMm, di: DimMm): number {
   const nx = Math.floor(di.largo / orient.largo);
   const nz = Math.floor(di.ancho / orient.ancho);
@@ -119,6 +129,22 @@ function mejorOrientacion(dimUnidad: DimMm, di: DimMm): DimMm | null {
     }
   }
   return best;
+}
+
+// Mensaje explicativo: por qué NO entra en ninguna orientación
+function motivoNoEntra(codigo: string, dim: DimMm, di: DimMm): string {
+  const ors = orientaciones(dim);
+  const entra = ors.some(
+    (o) => o.largo <= di.largo && o.ancho <= di.ancho && o.alto <= di.alto
+  );
+  if (entra) return "";
+
+  const ejemplos = ors
+    .slice(0, 3) // suficiente para explicar sin spam
+    .map((o) => `${o.largo}×${o.ancho}×${o.alto}`)
+    .join(" | ");
+
+  return `El producto ${codigo} (${dim.largo}×${dim.ancho}×${dim.alto} mm) NO entra en el bulto (interna ${di.largo}×${di.ancho}×${di.alto} mm). Orientaciones probadas (muestra): ${ejemplos}.`;
 }
 
 /* ============================
@@ -144,9 +170,21 @@ function packingPrimerBulto3D(
   let volumenUsadoM3 = 0;
 
   for (const it of items) {
+    const codigo = it.codigoProducto?.trim() || `PROD-${it.productoId}`;
+
     const orient = mejorOrientacion(it.dimUnidadMm, di) ?? it.dimUnidadMm;
     const capSolo = capacidadGrid(orient, di);
+
+    dbg("[ORIENT]", {
+      codigo,
+      dimUnidadOriginal: it.dimUnidadMm,
+      orientElegida: orient,
+      capSolo,
+      di,
+    });
+
     let colocadas = 0;
+    let cortoPorAltura = false;
 
     const init = () => {
       if (!initialized) {
@@ -157,12 +195,22 @@ function packingPrimerBulto3D(
       }
     };
 
-    const codigo = it.codigoProducto?.trim() || `PROD-${it.productoId}`;
-
     for (let i = 0; i < it.cantidadUnidades; i++) {
       init();
 
-      if (cursorY + orient.alto / 2 > di.alto / 2) break;
+      // corta SOLO este producto (no global)
+      if (cursorY + orient.alto / 2 > di.alto / 2) {
+        cortoPorAltura = true;
+        dbg("[FULL]", {
+          codigo,
+          razon: "sin altura",
+          cursor: { cursorX, cursorY, cursorZ },
+          orient,
+          di,
+          colocadasHastaAhora: colocadas,
+        });
+        break;
+      }
 
       placements.push({
         productoId: it.productoId,
@@ -194,7 +242,13 @@ function packingPrimerBulto3D(
       capacidadTeoricaSiSolo: capSolo,
     });
 
-    if (cursorY + orient.alto / 2 > di.alto / 2) break;
+    dbg("[RESUMEN_PRODUCTO]", {
+      codigo,
+      colocadas,
+      cortoPorAltura,
+      cursorFinal: { cursorX, cursorY, cursorZ },
+      unidadesEnBulto1Global: unidadesEnBulto1,
+    });
   }
 
   const bultosNecesariosEstimados =
@@ -202,23 +256,26 @@ function packingPrimerBulto3D(
       ? Math.ceil(unidadesTotales / unidadesEnBulto1)
       : 999999;
 
-  console.log("=== PACKING PRIMER BULTO ===");
-  console.log("DIM INTERNA:", di);
-  console.log(
-    "INSTRUCCIONES:",
-    instrucciones.map((i) => ({
+  dbg("=== PACKING PRIMER BULTO ===", {
+    dimInterna: di,
+    unidadesTotales,
+    unidadesEnBulto1,
+    bultosNecesariosEstimados,
+    ocupacionPct: capM3 > 0 ? Math.min(100, (volumenUsadoM3 / capM3) * 100) : 0,
+    instrucciones: instrucciones.map((i) => ({
       codigo: i.codigo,
       unidadesEnBulto1: i.unidadesEnBulto1,
       capSolo: i.capacidadTeoricaSiSolo,
-    }))
-  );
-  console.log(
-    "PLACEMENTS POR PRODUCTO:",
-    placements.reduce<Record<string, number>>((acc, p) => {
-      acc[p.codigo] = (acc[p.codigo] ?? 0) + 1;
-      return acc;
-    }, {})
-  );
+      orient: i.orientacionMm,
+    })),
+    placementsPorProducto: placements.reduce<Record<string, number>>(
+      (acc, p) => {
+        acc[p.codigo] = (acc[p.codigo] ?? 0) + 1;
+        return acc;
+      },
+      {}
+    ),
+  });
 
   return {
     dimInternaMm: di,
@@ -295,13 +352,9 @@ export function evaluarTopBultosEmpresa(
       if (cap <= 0) motivos.push("Capacidad interna inválida.");
 
       for (const it of itemsValidos) {
-        if (!entraEnBulto(it.dimUnidadMm, di)) {
-          motivos.push(
-            `El producto ${
-              it.codigoProducto ?? it.productoId
-            } no entra en el bulto.`
-          );
-        }
+        const codigo = it.codigoProducto?.trim() || `PROD-${it.productoId}`;
+        const m = motivoNoEntra(codigo, it.dimUnidadMm, di);
+        if (m) motivos.push(m);
       }
 
       if (motivos.length) {
@@ -340,7 +393,6 @@ export function evaluarTopBultosEmpresa(
         packing3D = packingPrimerBulto3D(orden, di);
       }
 
-      // 🔒 FIX TS: guard clause explícito
       if (!packing3D) {
         return {
           bulto: b,

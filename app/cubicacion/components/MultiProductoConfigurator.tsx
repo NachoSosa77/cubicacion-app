@@ -122,6 +122,69 @@ function buildGridPlacements(
 }
 
 /* ============================
+   Debug (opt-in)
+============================ */
+
+const DEBUG_PACKING_UI =
+  typeof process !== "undefined" &&
+  (process.env.NEXT_PUBLIC_DEBUG_PACKING === "true" ||
+    process.env.DEBUG_PACKING === "true");
+
+function dbgUI(...args: any[]) {
+  if (!DEBUG_PACKING_UI) return;
+  // eslint-disable-next-line no-console
+  console.log(...args);
+}
+
+/* ============================
+   Descartes (UI)
+============================ */
+
+function dimsInternasBultoEmpresa(b: IEmpresaBulto): DimMm {
+  const e = Math.max(0, Number((b as any).espesor_pared_mm ?? 0));
+  return {
+    largo: Math.max(0, Number((b as any).largo_mm ?? 0) - 2 * e),
+    ancho: Math.max(0, Number((b as any).ancho_mm ?? 0) - 2 * e),
+    alto: Math.max(0, Number((b as any).alto_mm ?? 0) - 2 * e),
+  };
+}
+
+const orientacionesUnidad = (d: DimMm): DimMm[] => [
+  { largo: d.largo, ancho: d.ancho, alto: d.alto },
+  { largo: d.largo, ancho: d.alto, alto: d.ancho },
+  { largo: d.ancho, ancho: d.largo, alto: d.alto },
+  { largo: d.ancho, ancho: d.alto, alto: d.largo },
+  { largo: d.alto, ancho: d.largo, alto: d.ancho },
+  { largo: d.alto, ancho: d.ancho, alto: d.largo },
+];
+
+function entraEnAlgunaOrientacion(dimUnidad: DimMm, di: DimMm): boolean {
+  return orientacionesUnidad(dimUnidad).some(
+    (o) => o.largo <= di.largo && o.ancho <= di.ancho && o.alto <= di.alto
+  );
+}
+
+function motivoNoEntraProductoEnBulto(
+  codigoProd: string,
+  dimUnidad: DimMm,
+  di: DimMm
+) {
+  const ejemplos = orientacionesUnidad(dimUnidad)
+    .slice(0, 3)
+    .map((o) => `${o.largo}×${o.ancho}×${o.alto}`)
+    .join(" | ");
+
+  return `Producto ${codigoProd} (${dimUnidad.largo}×${dimUnidad.ancho}×${dimUnidad.alto} mm) no entra en interna ${di.largo}×${di.ancho}×${di.alto} mm. Orientaciones (muestra): ${ejemplos}`;
+}
+
+type BultoDescartado = {
+  bultoId: number;
+  codigo: string;
+  dimInterna: DimMm;
+  motivos: string[];
+};
+
+/* ============================
    Component
 ============================ */
 
@@ -258,13 +321,68 @@ export function MultiProductoConfigurator({
 
   /* ============================
      TOP bultos empresa
-     ✅ ahora depende de packingPolicy
   ============================ */
 
   const topBultosEmpresa = useMemo(() => {
     if (!itemsMultiReal.length) return [];
-    return evaluarTopBultosEmpresa(itemsMultiReal, bultosEmpresa, 3, packingPolicy);
+    return evaluarTopBultosEmpresa(
+      itemsMultiReal,
+      bultosEmpresa,
+      3,
+      packingPolicy
+    );
   }, [itemsMultiReal, bultosEmpresa, packingPolicy]);
+
+  /* ============================
+     Bultos descartados (UI)
+  ============================ */
+
+  const bultosDescartados = useMemo((): BultoDescartado[] => {
+    if (!itemsMultiReal.length) return [];
+
+    const descartados: BultoDescartado[] = [];
+
+    for (const b of bultosEmpresa) {
+      if (!(b as any).habilitado) continue;
+
+      const di = dimsInternasBultoEmpresa(b);
+      const codigoB =
+        String((b as any).codigo ?? "").trim() || `BULTO-${(b as any).id}`;
+
+      const motivos: string[] = [];
+
+      if (di.largo <= 0 || di.ancho <= 0 || di.alto <= 0) {
+        motivos.push(
+          `Capacidad interna inválida (${di.largo}×${di.ancho}×${di.alto}).`
+        );
+      } else {
+        for (const it of itemsMultiReal) {
+          const codProd =
+            (it.codigoProducto ?? `PROD-${it.productoId}`).trim();
+          if (!entraEnAlgunaOrientacion(it.dimUnidadMm, di)) {
+            motivos.push(motivoNoEntraProductoEnBulto(codProd, it.dimUnidadMm, di));
+          }
+        }
+      }
+
+      if (motivos.length) {
+        descartados.push({
+          bultoId: Number((b as any).id),
+          codigo: codigoB,
+          dimInterna: di,
+          motivos,
+        });
+      }
+    }
+
+    const viablesIds = new Set<number>(
+      topBultosEmpresa
+        .map((x) => Number((x as any).bulto?.id))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    );
+
+    return descartados.filter((d) => !viablesIds.has(d.bultoId));
+  }, [itemsMultiReal, bultosEmpresa, topBultosEmpresa]);
 
   /* ============================
      Opciones unificadas
@@ -314,7 +432,11 @@ export function MultiProductoConfigurator({
             // Regla 1: NO mostrar ocupación para bulto estándar (pack cerrado)
             const ocupacionPct = null;
 
-            const placements = buildGridPlacements(dimInterna, it.dimUnidadMm, unidadesEnBulto1);
+            const placements = buildGridPlacements(
+              dimInterna,
+              it.dimUnidadMm,
+              unidadesEnBulto1
+            );
 
             const data3d: CubicacionBulto3DInput = {
               bulto: {
@@ -354,28 +476,24 @@ export function MultiProductoConfigurator({
       }
     }
 
-    // ===== 2) Opciones empresa (1 o más productos) — usa packing3D (fiel)
+    // ===== 2) Opciones empresa — usa packing3D (fiel)
     for (const opt of topBultosEmpresa) {
       if (!opt?.packing3D) continue;
       const p3d = opt.packing3D;
 
-        console.log("==== DEBUG BULTO EMPRESA ====");
-  console.log("BULTO:", opt.bulto.codigo);
-  console.log("DIM INTERNA:", p3d.dimInternaMm);
-  console.log(
-    "INSTRUCCIONES:",
-    p3d.instrucciones.map((i) => ({
-      codigo: i.codigo,
-      unidadesEnBulto1: i.unidadesEnBulto1,
-      capacidadSolo: i.capacidadTeoricaSiSolo,
-      orientacion: i.orientacionMm,
-    }))
-  );
-  console.log(
-    "PLACEMENTS:",
-    p3d.placementsBulto1.map((p) => p.codigo)
-  );
-
+      dbgUI("==== DEBUG BULTO EMPRESA (UI) ====");
+      dbgUI("BULTO:", (opt as any).bulto?.codigo);
+      dbgUI("DIM INTERNA:", p3d.dimInternaMm);
+      dbgUI(
+        "INSTRUCCIONES:",
+        p3d.instrucciones.map((i) => ({
+          codigo: i.codigo,
+          unidadesEnBulto1: i.unidadesEnBulto1,
+          capacidadSolo: i.capacidadTeoricaSiSolo,
+          orientacion: i.orientacionMm,
+        }))
+      );
+      dbgUI("PLACEMENTS:", p3d.placementsBulto1.map((p) => p.codigo));
 
       const data3d: CubicacionBulto3DInput = {
         bulto: {
@@ -385,7 +503,8 @@ export function MultiProductoConfigurator({
             ancho: (opt as any).bulto.ancho_mm,
             alto: (opt as any).bulto.alto_mm,
           },
-          dimInternaMm: p3d.dimInternaMm as unknown as DimMmEmpresa as unknown as DimMm,
+          dimInternaMm:
+            (p3d.dimInternaMm as unknown as DimMmEmpresa as unknown as DimMm),
         },
         contenido: p3d.placementsBulto1.map((pl) => ({
           productoId: pl.productoId,
@@ -430,7 +549,14 @@ export function MultiProductoConfigurator({
     }
 
     return dedup;
-  }, [itemsMultiReal, productos, items, topBultosEmpresa, isMultiProducto, packingPolicy]);
+  }, [
+    itemsMultiReal,
+    productos,
+    items,
+    topBultosEmpresa,
+    isMultiProducto,
+    packingPolicy,
+  ]);
 
   /* ============================
      Mantener/ajustar selección
@@ -810,6 +936,41 @@ export function MultiProductoConfigurator({
               <p className="text-xs text-amber-700">
                 Seleccioná una opción para habilitar la previsualización 3D.
               </p>
+            )}
+
+            {/* Panel de descartados */}
+            {bultosDescartados.length > 0 && (
+              <details className="rounded-md border bg-white p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+                  Bultos descartados ({bultosDescartados.length})
+                </summary>
+
+                <div className="mt-3 space-y-3">
+                  <p className="text-xs text-slate-600">
+                    Estos bultos no aparecen como opción porque al menos un producto
+                    no entra en ninguna orientación (según dimensiones internas).
+                  </p>
+
+                  <div className="space-y-2">
+                    {bultosDescartados.map((d) => (
+                      <div key={d.bultoId} className="rounded-md border p-3">
+                        <p className="text-sm font-semibold">
+                          {d.codigo}{" "}
+                          <span className="text-xs font-normal text-slate-500">
+                            (interna {d.dimInterna.largo}×{d.dimInterna.ancho}×{d.dimInterna.alto} mm)
+                          </span>
+                        </p>
+
+                        <ul className="mt-2 list-disc pl-5 text-xs text-slate-700 space-y-1">
+                          {d.motivos.map((m, idx) => (
+                            <li key={idx}>{m}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </details>
             )}
           </div>
         )}

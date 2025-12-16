@@ -2,14 +2,16 @@
 import { PrismaClient } from "@prisma/client";
 
 export async function seedEmpresaBulto(prisma: PrismaClient) {
-  // Tomamos una empresa existente
-  const empresa = await prisma.empresa.findFirst({
-    where: { habilitado: true },
+  const empresas = await prisma.empresa.findMany({
+    where: { habilitado: true, deleted_at: null },
     orderBy: { id: "asc" },
+    select: { id: true, razon_social: true },
   });
 
-  if (!empresa) {
-    throw new Error("No existe ninguna empresa para asociar bultos.");
+  if (!empresas.length) {
+    throw new Error(
+      "No existe ninguna empresa habilitada para asociar bultos."
+    );
   }
 
   const bultos = [
@@ -51,25 +53,22 @@ export async function seedEmpresaBulto(prisma: PrismaClient) {
     },
   ];
 
-  for (const b of bultos) {
-    await prisma.empresaBulto.upsert({
-      where: {
-        empresa_id_codigo: {
-          empresa_id: empresa.id,
-          codigo: b.codigo,
+  for (const emp of empresas) {
+    for (const b of bultos) {
+      await prisma.empresaBulto.upsert({
+        where: {
+          empresa_id_codigo: {
+            empresa_id: emp.id,
+            codigo: b.codigo,
+          },
         },
-      },
-      update: {
-        ...b,
-      },
-      create: {
-        empresa_id: empresa.id,
-        ...b,
-      },
-    });
-  }
+        update: { ...b, empresa_id: emp.id },
+        create: { ...b, empresa_id: emp.id },
+      });
+    }
 
-  console.log(
-    `Seed EmpresaBulto OK → ${bultos.length} bultos para empresa ${empresa.razon_social}`
-  );
+    console.log(
+      `Seed EmpresaBulto OK → ${bultos.length} bultos para empresa ${emp.razon_social}`
+    );
+  }
 }

@@ -13,6 +13,17 @@ enum OrientacionForzada {
   ALTO
 }
 
+enum PalletMixPolicy {
+  NO_MEZCLAR
+  PERMITIR_MEZCLA
+}
+
+enum PalletObjective {
+  OPERATIVO_ESTABLE
+  OPTIMIZAR_VOLUMEN
+  CUIDADO_PRODUCTO
+}
+
 enum PackingPolicy {
   OPERATIVO_AGRUPADO
   OPTIMIZAR_VOLUMEN
@@ -22,6 +33,17 @@ enum PackingPolicy {
 enum TipoBultoSeleccionado {
   PRODUCTO_ESTANDAR
   EMPRESA_BULTO
+}
+
+enum TipoContenedorKind {
+  PALLET
+  CONTENEDOR
+}
+
+enum FragilesPolicy {
+  FRAGILES_ARRIBA
+  PERMITIR_MEZCLA
+  BLOQUEAR_MEZCLA
 }
 
 model TipoProducto {
@@ -39,25 +61,33 @@ model TipoProducto {
   codigo                      String    @unique
   descripcion                 String
   unidades_por_unidad_entrega Int
-  peso_por_unidad_venta       Int
-  peso_por_uniad_entrega      Int
-  volumen_por_unidad_entrega  Int
-  unidad_entra_por_bulto      Int
-  alto_por_bulto              Int
-  ancho_por_bulto             Int
-  largo_por_bulto             Int
-  peso_por_bulto              Int
-  volumen_por_bulto           Int
 
-  cubicaciones                   Cubicacion[]
-  contenedores                   TipoContenedorProducto[]
-  cubicacionProductoBulto        CubicacionProductoBulto? // <- opcional
-  cubicacionProductoBultoItems   CubicacionProductoBultoItem[]
-  cubicacionesProductoContenedor CubicacionProductoContenedor[]
-  reglasCubicacion               CubicacionRegla[]
+  // ✅ pesos/volúmenes como Decimal (pro)
+  peso_por_unidad_venta      Decimal? @db.Decimal(10, 3)
+  peso_por_uniad_entrega     Decimal? @db.Decimal(10, 3)
+  volumen_por_unidad_entrega Decimal? @db.Decimal(10, 6)
 
-  divisionServicio DivisionServicio @relation(fields: [division_servicio_id], references: [id])
+  unidad_entra_por_bulto Int
+  alto_por_bulto         Int
+  ancho_por_bulto        Int
+  largo_por_bulto        Int
 
+  peso_por_bulto                Decimal?                       @db.Decimal(10, 3)
+  volumen_por_bulto             Decimal?                       @db.Decimal(10, 6)
+  cubicacionProductoBulto       CubicacionProductoBulto?
+  cubicacionProductoBultoItems  CubicacionProductoBultoItem[]
+  cubicacions                   Cubicacion[]
+  cubicacionProductoContenedors CubicacionProductoContenedor[]
+  tipoContenedorProductos       TipoContenedorProducto[]
+  divisionServicio              DivisionServicio?              @relation(fields: [divisionServicioId], references: [id])
+  divisionServicioId            Int?
+  cubicacionReglas              CubicacionRegla[]
+  cubicacionConfiguracionItems  CubicacionConfiguracionItem[]
+  bultoArmadoItems              BultoArmadoItem[]
+  bultoArmadoPlacements         BultoArmadoPlacement[]
+  cubicacionLoteItems           CubicacionLoteItem[]
+
+  // ...
   @@map("tipo_producto")
 }
 
@@ -172,25 +202,30 @@ model CubicacionProductoContenedor {
 }
 
 model TipoContenedor {
-  id             Int       @id @default(autoincrement())
-  created_at     DateTime
-  updated_at     DateTime?
-  deleted_at     DateTime?
-  habilitado     Boolean   @default(true)
-  created_by     String?
-  updated_by     String?
-  codigo         String    @unique
-  descripcion    String
-  largo_mts      Float
-  ancho_mts      Float
-  alto_mts       Float
-  peso_pallet_kg Float
-  peso_max_kg    Float
-  peso_max_lts   Float
+  id          Int       @id @default(autoincrement())
+  created_at  DateTime
+  updated_at  DateTime?
+  deleted_at  DateTime?
+  habilitado  Boolean   @default(true)
+  created_by  String?
+  updated_by  String?
+  codigo      String    @unique
+  descripcion String
+
+  largo_mts Float?
+  ancho_mts Float?
+  alto_mts  Float?
+
+  peso_pallet_kg Float? // tara del pallet (si aplica)
+  peso_max_kg    Float? // carga máx en kg (si aplica)
+  peso_max_lts   Float? // carga máx en litros (si aplica)
 
   productos                      TipoContenedorProducto[]
   cubicacionesProductoContenedor CubicacionProductoContenedor[]
   cubicacionReglas               CubicacionRegla[]
+  cubicacionConfiguracions       CubicacionConfiguracion[]
+  palletizacions                 Palletizacion[]
+  cubicacionPalletPlans          CubicacionPalletPlan[]
 
   @@map("tipo_contenedor")
 }
@@ -327,6 +362,12 @@ model CubicacionRegla {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  maxPesoKg        Decimal? @map("max_peso_kg") @db.Decimal(10, 2)
+  maxPesoPorCapaKg Decimal? @map("max_peso_por_capa_kg") @db.Decimal(10, 2)
+
+  fragilesPolicy         FragilesPolicy @default(FRAGILES_ARRIBA) @map("fragiles_policy")
+  noPesadosSobreFragiles Boolean        @default(true) @map("no_pesados_sobre_fragiles")
+
   empresa                 empresa                  @relation(fields: [empresaId], references: [id])
   tipoProducto            TipoProducto?            @relation(fields: [tipoProductoId], references: [id])
   tipoContenedor          TipoContenedor?          @relation(fields: [tipoContenedorId], references: [id])
@@ -334,6 +375,210 @@ model CubicacionRegla {
 
   @@index([empresaId, tipoProductoId, tipoContenedorId, transporteClasificacionId], name: "idx_empresa_producto_contenedor_transporte")
   @@map("cubicacion_regla")
+}
+
+model CubicacionConfiguracion {
+  id Int @id @default(autoincrement())
+
+  created_at  DateTime @default(now())
+  descripcion String?
+
+  packing_policy   PackingPolicy         @default(OPERATIVO_AGRUPADO)
+  tipo_bulto       TipoBultoSeleccionado @default(EMPRESA_BULTO)
+  bulto_empresa_id Int?
+
+  // (Opcional) a qué contenedor se palletiza
+  tipo_contenedor_id Int?
+
+  // Relaciones
+  bultoEmpresa   EmpresaBulto?   @relation(fields: [bulto_empresa_id], references: [id])
+  tipoContenedor TipoContenedor? @relation(fields: [tipo_contenedor_id], references: [id])
+
+  items           CubicacionConfiguracionItem[]
+  bultosArmados   BultoArmado[]
+  palletizaciones Palletizacion[]
+
+  @@index([bulto_empresa_id])
+  @@index([tipo_contenedor_id])
+  @@map("cubicacion_configuracion")
+}
+
+model CubicacionConfiguracionItem {
+  id Int @id @default(autoincrement())
+
+  configuracion_id Int
+  tipo_producto_id Int
+
+  cantidad_unidades Int
+  volumen_unidad_m3 Float
+  volumen_total_m3  Float
+
+  // dims unidad (para reproducibilidad y auditoría)
+  largo_unidad_mm Int
+  ancho_unidad_mm Int
+  alto_unidad_mm  Int
+
+  configuracion CubicacionConfiguracion @relation(fields: [configuracion_id], references: [id], onDelete: Cascade)
+  tipoProducto  TipoProducto            @relation(fields: [tipo_producto_id], references: [id])
+
+  @@index([configuracion_id])
+  @@index([tipo_producto_id])
+  @@map("cubicacion_configuracion_item")
+}
+
+model BultoArmado {
+  id Int @id @default(autoincrement())
+
+  configuracion_id Int
+  indice           Int
+
+  tipo_bulto       TipoBultoSeleccionado
+  bulto_empresa_id Int?
+
+  // dims bulto para viewer
+  largo_ext_mm Int
+  ancho_ext_mm Int
+  alto_ext_mm  Int
+
+  largo_int_mm Int
+  ancho_int_mm Int
+  alto_int_mm  Int
+
+  // métricas
+  unidades_totales   Int
+  volumen_ocupado_m3 Float
+  ocupacion_pct      Float
+
+  peso_total_kg Decimal? @db.Decimal(10, 3)
+
+  configuracion CubicacionConfiguracion @relation(fields: [configuracion_id], references: [id], onDelete: Cascade)
+  bultoEmpresa  EmpresaBulto?           @relation(fields: [bulto_empresa_id], references: [id])
+
+  items                   BultoArmadoItem[]
+  placements              BultoArmadoPlacement[]
+  palletizacionPlacements PalletizacionPlacement[]
+
+  @@unique([configuracion_id, indice])
+  @@index([bulto_empresa_id])
+  @@map("bulto_armado")
+}
+
+model BultoArmadoItem {
+  id Int @id @default(autoincrement())
+
+  bulto_armado_id  Int
+  tipo_producto_id Int
+
+  unidades Int
+
+  // dims unidad (para viewer fiel)
+  largo_unidad_mm Int
+  ancho_unidad_mm Int
+  alto_unidad_mm  Int
+
+  peso_unidad_kg Decimal? @db.Decimal(10, 3)
+
+  bultoArmado  BultoArmado  @relation(fields: [bulto_armado_id], references: [id], onDelete: Cascade)
+  tipoProducto TipoProducto @relation(fields: [tipo_producto_id], references: [id])
+
+  @@index([bulto_armado_id])
+  @@index([tipo_producto_id])
+  @@map("bulto_armado_item")
+}
+
+model BultoArmadoPlacement {
+  id Int @id @default(autoincrement())
+
+  bulto_armado_id  Int
+  tipo_producto_id Int?
+
+  codigo String @db.VarChar(100)
+
+  // posición centro (mm) + orientación (mm)
+  x_mm Float
+  y_mm Float
+  z_mm Float
+
+  largo_mm Int
+  ancho_mm Int
+  alto_mm  Int
+
+  bultoArmado  BultoArmado   @relation(fields: [bulto_armado_id], references: [id], onDelete: Cascade)
+  tipoProducto TipoProducto? @relation(fields: [tipo_producto_id], references: [id])
+
+  @@index([bulto_armado_id])
+  @@map("bulto_armado_placement")
+}
+
+model Palletizacion {
+  id Int @id @default(autoincrement())
+
+  configuracion_id   Int
+  tipo_contenedor_id Int
+
+  created_at DateTime @default(now())
+
+  // métricas globales
+  pallets_totales      Int
+  ocupacion_global_pct Float
+  peso_total_kg        Decimal? @db.Decimal(10, 2)
+
+  configuracion  CubicacionConfiguracion @relation(fields: [configuracion_id], references: [id], onDelete: Cascade)
+  tipoContenedor TipoContenedor          @relation(fields: [tipo_contenedor_id], references: [id])
+
+  pallets PalletizacionPallet[]
+
+  @@index([configuracion_id])
+  @@index([tipo_contenedor_id])
+  @@map("palletizacion")
+}
+
+model PalletizacionPallet {
+  id Int @id @default(autoincrement())
+
+  palletizacion_id Int
+  indice           Int
+
+  // dims internas mm (ya convertidas y con margen aplicado)
+  largo_int_mm Int
+  ancho_int_mm Int
+  alto_int_mm  Int
+
+  ocupacion_pct Float
+  peso_kg       Decimal? @db.Decimal(10, 2)
+
+  palletizacion Palletizacion @relation(fields: [palletizacion_id], references: [id], onDelete: Cascade)
+
+  placements PalletizacionPlacement[]
+
+  @@unique([palletizacion_id, indice])
+  @@map("palletizacion_pallet")
+}
+
+model PalletizacionPlacement {
+  id Int @id @default(autoincrement())
+
+  pallet_id       Int
+  bulto_armado_id Int
+
+  // posición centro (mm) + orientación del bulto (mm)
+  x_mm Float
+  y_mm Float
+  z_mm Float
+
+  largo_mm Int
+  ancho_mm Int
+  alto_mm  Int
+
+  // capa / orden (útil para reglas “fragiles arriba”)
+  capa Int
+
+  pallet      PalletizacionPallet @relation(fields: [pallet_id], references: [id], onDelete: Cascade)
+  bultoArmado BultoArmado         @relation(fields: [bulto_armado_id], references: [id])
+
+  @@index([pallet_id])
+  @@index([bulto_armado_id])
+  @@map("palletizacion_placement")
 }
 
 model empresa {
@@ -350,7 +595,8 @@ model empresa {
   transporte       Transporte[]
   cubicacionReglas CubicacionRegla[]
 
-  bultos EmpresaBulto[]
+  bultos          EmpresaBulto[]
+  cubicacionLotes CubicacionLote[]
 
   @@map("empresa")
 }
@@ -380,7 +626,10 @@ model EmpresaBulto {
   es_preferido Boolean @default(false)
 
   // ✅ lado inverso requerido por Prisma
-  cubicaciones Cubicacion[]
+  cubicaciones             Cubicacion[]
+  cubicacionConfiguracions CubicacionConfiguracion[]
+  bultoArmados             BultoArmado[]
+  cubicacionLotes          CubicacionLote[]
 
   @@unique([empresa_id, codigo])
   @@index([empresa_id, habilitado])
@@ -408,4 +657,80 @@ model Transporte {
   @@index([claseTransporteId], map: "IDX_336ADCB45F23D074")
   @@index([transporteClasificacionId], map: "IDX_336ADCB4CLASF")
   @@map("transporte")
+}
+
+model CubicacionLote {
+  id Int @id @default(autoincrement())
+
+  empresaId   Int     @map("empresa_id")
+  descripcion String?
+
+  packing_policy   PackingPolicy         @default(OPERATIVO_AGRUPADO)
+  tipo_bulto       TipoBultoSeleccionado @default(EMPRESA_BULTO)
+  bulto_empresa_id Int?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  empresa      empresa       @relation(fields: [empresaId], references: [id])
+  bultoEmpresa EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id])
+
+  items   CubicacionLoteItem[]
+  pallets CubicacionPalletPlan[]
+
+  bulto_layout Json? @db.Json
+
+  @@index([empresaId], map: "idx_lote_empresa")
+  @@map("cubicacion_lote")
+}
+
+model CubicacionLoteItem {
+  id Int @id @default(autoincrement())
+
+  loteId         Int @map("lote_id")
+  tipoProductoId Int @map("tipo_producto_id")
+
+  cantidad_unidades Int
+  volumen_total_m3  Float
+
+  // opcional para auditoría (no rompe nada)
+  dim_unidad_mm  Json?  @db.Json
+  peso_unidad_kg Float?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  lote         CubicacionLote @relation(fields: [loteId], references: [id], onDelete: Cascade)
+  tipoProducto TipoProducto   @relation(fields: [tipoProductoId], references: [id])
+
+  @@index([loteId], map: "idx_lote_item")
+  @@map("cubicacion_lote_item")
+}
+
+model CubicacionPalletPlan {
+  id Int @id @default(autoincrement())
+
+  loteId           Int @map("lote_id")
+  tipoContenedorId Int @map("tipo_contenedor_id")
+
+  permitir_mezcla        Boolean @default(true)
+  max_codigos_por_pallet Int?
+  max_altura_mm          Int?
+
+  pallets_necesarios    Int
+  ocupacion_volumen_pct Decimal @db.Decimal(5, 2)
+  peso_total_kg         Float
+  altura_utilizada_mm   Int
+
+  // layout completo (pallets + placements + métricas por pallet)
+  layout Json @db.Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  lote           CubicacionLote @relation(fields: [loteId], references: [id], onDelete: Cascade)
+  tipoContenedor TipoContenedor @relation(fields: [tipoContenedorId], references: [id])
+
+  @@unique([loteId, tipoContenedorId], map: "uq_lote_contenedor")
+  @@index([loteId], map: "idx_pallet_plan_lote")
+  @@map("cubicacion_pallet_plan")
 }

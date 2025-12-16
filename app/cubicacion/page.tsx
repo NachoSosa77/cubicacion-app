@@ -8,32 +8,19 @@ import {
   ITransporteClasificacion,
 } from "./actions/transporteActions";
 
-import type {
-  MultiProductoConfiguracionInput,
-} from "./actions/saveMultiProductoConfiguracion";
+import type { MultiProductoConfiguracionInput } from "./actions/saveMultiProductoConfiguracion";
 
 import { MultiProductoConfigurator } from "./components/MultiProductoConfigurator";
+import { toPlain } from "./lib/toPlain";
 
 export default async function CubicacionPage() {
-  // =============================
-  // Datos base
-  // =============================
   const productos = await getTipoProductos();
   const contenedores = await getTipoContenedores();
-  const camiones: ITransporteClasificacion[] =
-    await getTransporteClasificaciones();
+  const camiones: ITransporteClasificacion[] = await getTransporteClasificaciones();
 
-  /**
-   * ⚠️ TEMPORAL
-   * Luego vendrá del usuario logueado
-   */
   const empresaId = 1;
-
   const bultosEmpresa = await getEmpresaBultosByEmpresaId(empresaId);
 
-  // =============================
-  // Server Action: multi-producto
-  // =============================
   async function guardarConfiguracionMultiProducto(
     input: MultiProductoConfiguracionInput
   ) {
@@ -41,14 +28,11 @@ export default async function CubicacionPage() {
     await saveMultiProductoConfiguracion(input);
   }
 
-  // =============================
-  // Render
-  // =============================
   return (
     <div className="space-y-6">
       <MultiProductoConfigurator
-        productos={productos}
-        bultosEmpresa={bultosEmpresa}
+        productos={toPlain(productos)}
+        bultosEmpresa={toPlain(bultosEmpresa)}
         onSubmit={guardarConfiguracionMultiProducto}
       />
     </div>
