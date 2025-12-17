@@ -16,16 +16,17 @@ import { toPlain } from "./lib/toPlain";
 export default async function CubicacionPage() {
   const productos = await getTipoProductos();
   const contenedores = await getTipoContenedores();
-  const camiones: ITransporteClasificacion[] = await getTransporteClasificaciones();
+  const camiones: ITransporteClasificacion[] =
+    await getTransporteClasificaciones();
 
   const empresaId = 1;
   const bultosEmpresa = await getEmpresaBultosByEmpresaId(empresaId);
 
   async function guardarConfiguracionMultiProducto(
     input: MultiProductoConfiguracionInput
-  ) {
+  ): Promise<{ loteId: number }> {
     "use server";
-    await saveMultiProductoConfiguracion(input);
+    return await saveMultiProductoConfiguracion(input);
   }
 
   return (

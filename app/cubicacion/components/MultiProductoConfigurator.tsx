@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState, useTransition } from "react";
 import { IEmpresaBulto } from "../actions/empresaBultoActions";
 import { ITipoProducto } from "../actions/productoActions";
@@ -34,7 +35,9 @@ type ItemState = {
 interface Props {
   productos: ITipoProducto[];
   bultosEmpresa: IEmpresaBulto[];
-  onSubmit: (input: MultiProductoConfiguracionInput) => Promise<void>;
+  onSubmit: (
+    input: MultiProductoConfiguracionInput
+  ) => Promise<{ loteId: number }>;
 }
 
 type OpcionCubicacion = {
@@ -214,6 +217,8 @@ export function MultiProductoConfigurator({
     null
   );
 
+  const router = useRouter();
+
   const [packingPolicy, setPackingPolicy] =
     useState<PackingPolicy>("OPERATIVO_AGRUPADO");
 
@@ -357,10 +362,11 @@ export function MultiProductoConfigurator({
         );
       } else {
         for (const it of itemsMultiReal) {
-          const codProd =
-            (it.codigoProducto ?? `PROD-${it.productoId}`).trim();
+          const codProd = (it.codigoProducto ?? `PROD-${it.productoId}`).trim();
           if (!entraEnAlgunaOrientacion(it.dimUnidadMm, di)) {
-            motivos.push(motivoNoEntraProductoEnBulto(codProd, it.dimUnidadMm, di));
+            motivos.push(
+              motivoNoEntraProductoEnBulto(codProd, it.dimUnidadMm, di)
+            );
           }
         }
       }
@@ -408,7 +414,10 @@ export function MultiProductoConfigurator({
 
         if (bL && bA && bH) {
           const row = items.find((x) => x.key === it.itemKey);
-          const grosor = Math.max(numberOrNull(row?.grosorParedMm ?? "") ?? 0, 0);
+          const grosor = Math.max(
+            numberOrNull(row?.grosorParedMm ?? "") ?? 0,
+            0
+          );
 
           const res = calcularUnidadEnBulto({
             producto,
@@ -493,7 +502,10 @@ export function MultiProductoConfigurator({
           orientacion: i.orientacionMm,
         }))
       );
-      dbgUI("PLACEMENTS:", p3d.placementsBulto1.map((p) => p.codigo));
+      dbgUI(
+        "PLACEMENTS:",
+        p3d.placementsBulto1.map((p) => p.codigo)
+      );
 
       const data3d: CubicacionBulto3DInput = {
         bulto: {
@@ -504,7 +516,7 @@ export function MultiProductoConfigurator({
             alto: (opt as any).bulto.alto_mm,
           },
           dimInternaMm:
-            (p3d.dimInternaMm as unknown as DimMmEmpresa as unknown as DimMm),
+            p3d.dimInternaMm as unknown as DimMmEmpresa as unknown as DimMm,
         },
         contenido: p3d.placementsBulto1.map((pl) => ({
           productoId: pl.productoId,
@@ -651,18 +663,19 @@ export function MultiProductoConfigurator({
     }
 
     if (!hasPreview) {
-      setErrores(["Antes de guardar, necesitás una previsualización 3D válida."]);
+      setErrores([
+        "Antes de guardar, necesitás una previsualización 3D válida.",
+      ]);
       return;
     }
 
-    const itemsToSave: MultiProductoConfiguracionItemInput[] = itemsMultiReal.map(
-      (i) => ({
+    const itemsToSave: MultiProductoConfiguracionItemInput[] =
+      itemsMultiReal.map((i) => ({
         tipoProductoId: i.productoId,
         cantidadUnidades: i.cantidadUnidades,
         cantidadBultos: 1,
         volumenTotalM3: i.volumenUnidadM3 * i.cantidadUnidades,
-      })
-    );
+      }));
 
     if (!itemsToSave.length) {
       setErrores(["No hay filas válidas para guardar."]);
@@ -675,7 +688,9 @@ export function MultiProductoConfigurator({
           descripcion: descripcion.trim() || null,
 
           // ✅ decisiones operativas (persistibles)
-          packingPolicy: selectedIsEmpresa ? packingPolicy : "OPERATIVO_AGRUPADO",
+          packingPolicy: selectedIsEmpresa
+            ? packingPolicy
+            : "OPERATIVO_AGRUPADO",
           tipoBulto: selectedOpt.kind,
           bultoEmpresaId:
             selectedOpt.kind === "EMPRESA_BULTO"
@@ -686,8 +701,10 @@ export function MultiProductoConfigurator({
           items: itemsToSave,
         };
 
-        await onSubmit(payload);
+        const { loteId } = await onSubmit(payload);
         setMensaje("Configuración guardada correctamente.");
+        router.push(`/cubicacion/pallet/${loteId}`);
+        router.refresh(); // opcional (si la page de pallet lee data server-side)
       } catch (err) {
         console.error(err);
         setErrores(["No se pudo guardar la configuración."]);
@@ -770,7 +787,11 @@ export function MultiProductoConfigurator({
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.cantidadUnidades}
                       onChange={(e) =>
-                        actualizarItem(item.key, "cantidadUnidades", e.target.value)
+                        actualizarItem(
+                          item.key,
+                          "cantidadUnidades",
+                          e.target.value
+                        )
                       }
                       placeholder="Ej: 20"
                     />
@@ -784,7 +805,11 @@ export function MultiProductoConfigurator({
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.largoUnidadMm}
                       onChange={(e) =>
-                        actualizarItem(item.key, "largoUnidadMm", e.target.value)
+                        actualizarItem(
+                          item.key,
+                          "largoUnidadMm",
+                          e.target.value
+                        )
                       }
                       placeholder="L"
                     />
@@ -798,7 +823,11 @@ export function MultiProductoConfigurator({
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.anchoUnidadMm}
                       onChange={(e) =>
-                        actualizarItem(item.key, "anchoUnidadMm", e.target.value)
+                        actualizarItem(
+                          item.key,
+                          "anchoUnidadMm",
+                          e.target.value
+                        )
                       }
                       placeholder="A"
                     />
@@ -826,7 +855,11 @@ export function MultiProductoConfigurator({
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.grosorParedMm}
                       onChange={(e) =>
-                        actualizarItem(item.key, "grosorParedMm", e.target.value)
+                        actualizarItem(
+                          item.key,
+                          "grosorParedMm",
+                          e.target.value
+                        )
                       }
                       placeholder="0"
                     />
@@ -894,7 +927,9 @@ export function MultiProductoConfigurator({
                     </p>
 
                     {opt.subtitulo && (
-                      <p className="text-xs text-slate-500 mt-1">{opt.subtitulo}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {opt.subtitulo}
+                      </p>
                     )}
 
                     <div className="mt-2 space-y-1 text-xs text-slate-700">
@@ -914,7 +949,9 @@ export function MultiProductoConfigurator({
                       {esStd ? (
                         <p>
                           Tipo de pack:{" "}
-                          <span className="font-semibold">Cerrado (producto)</span>
+                          <span className="font-semibold">
+                            Cerrado (producto)
+                          </span>
                         </p>
                       ) : (
                         <p>
@@ -947,8 +984,9 @@ export function MultiProductoConfigurator({
 
                 <div className="mt-3 space-y-3">
                   <p className="text-xs text-slate-600">
-                    Estos bultos no aparecen como opción porque al menos un producto
-                    no entra en ninguna orientación (según dimensiones internas).
+                    Estos bultos no aparecen como opción porque al menos un
+                    producto no entra en ninguna orientación (según dimensiones
+                    internas).
                   </p>
 
                   <div className="space-y-2">
@@ -957,7 +995,8 @@ export function MultiProductoConfigurator({
                         <p className="text-sm font-semibold">
                           {d.codigo}{" "}
                           <span className="text-xs font-normal text-slate-500">
-                            (interna {d.dimInterna.largo}×{d.dimInterna.ancho}×{d.dimInterna.alto} mm)
+                            (interna {d.dimInterna.largo}×{d.dimInterna.ancho}×
+                            {d.dimInterna.alto} mm)
                           </span>
                         </p>
 
@@ -990,7 +1029,9 @@ export function MultiProductoConfigurator({
               </div>
               <div>
                 <p className="text-slate-600">Bultos necesarios (estimado)</p>
-                <p className="font-semibold">{selectedOpt.bultosNecesariosEstimados}</p>
+                <p className="font-semibold">
+                  {selectedOpt.bultosNecesariosEstimados}
+                </p>
               </div>
               <div>
                 <p className="text-slate-600">
@@ -1016,7 +1057,11 @@ export function MultiProductoConfigurator({
             </p>
 
             {(
-              ["OPERATIVO_AGRUPADO", "OPTIMIZAR_VOLUMEN", "BUSCAR_MEJOR_ACOMODO"] as PackingPolicy[]
+              [
+                "OPERATIVO_AGRUPADO",
+                "OPTIMIZAR_VOLUMEN",
+                "BUSCAR_MEJOR_ACOMODO",
+              ] as PackingPolicy[]
             ).map((policy) => (
               <label key={policy} className="flex items-start gap-2 text-sm">
                 <input
@@ -1035,7 +1080,8 @@ export function MultiProductoConfigurator({
             ))}
 
             <p className="text-[11px] text-slate-500">
-              Cambiar la estrategia recalcula el layout del primer bulto (preview fiel).
+              Cambiar la estrategia recalcula el layout del primer bulto
+              (preview fiel).
             </p>
           </div>
         )}
@@ -1052,9 +1098,12 @@ export function MultiProductoConfigurator({
                 <p className="font-semibold text-slate-700">
                   Bulto estándar del producto (pack cerrado)
                 </p>
-                <p>Este bulto corresponde a un pack definido por el producto.</p>
                 <p>
-                  El espacio visible en la visualización no representa capacidad disponible.
+                  Este bulto corresponde a un pack definido por el producto.
+                </p>
+                <p>
+                  El espacio visible en la visualización no representa capacidad
+                  disponible.
                 </p>
               </div>
             )}
@@ -1062,7 +1111,8 @@ export function MultiProductoConfigurator({
             <CubicacionBultoViewer3D data={preview3DData} />
 
             <p className="text-xs text-slate-500">
-              La visualización es fiel al layout calculado (no se recalcula en el viewer).
+              La visualización es fiel al layout calculado (no se recalcula en
+              el viewer).
             </p>
           </div>
         )}
@@ -1095,7 +1145,8 @@ export function MultiProductoConfigurator({
 
         {!hasPreview && (
           <p className="text-xs text-slate-500 text-right">
-            Para guardar, primero seleccioná una opción y verificá la previsualización 3D.
+            Para guardar, primero seleccioná una opción y verificá la
+            previsualización 3D.
           </p>
         )}
       </form>

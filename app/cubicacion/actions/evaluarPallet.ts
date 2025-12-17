@@ -3,6 +3,21 @@
 import { prisma } from "@/lib/prisma";
 import { calcularPalletPlan } from "../lib/packing-pallet";
 
+function toNumber(v: unknown, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function requirePositive(n: number, msg: string) {
+  if (!Number.isFinite(n) || n <= 0) throw new Error(msg);
+  return n;
+}
+
+function ceilDiv(a: number, b: number) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return 0;
+  return Math.ceil(a / b);
+}
+
 export async function evaluarPallet(params: {
   empresaId: number;
   loteId: number;
@@ -10,13 +25,15 @@ export async function evaluarPallet(params: {
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
   objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
 }) {
-  const { empresaId, loteId, tipoContenedorId } = params;
+  const { empresaId, loteId, tipoContenedorId, mixPolicy, objective } = params;
 
+  // 1) Cargar contenedor + lote
   const [contenedor, lote] = await Promise.all([
     prisma.tipoContenedor.findUnique({ where: { id: tipoContenedorId } }),
     prisma.cubicacionLote.findUnique({
       where: { id: loteId },
       include: {
+        bultoEmpresa: true,
         items: { include: { tipoProducto: true } },
       },
     }),
@@ -24,8 +41,18 @@ export async function evaluarPallet(params: {
 
   if (!contenedor) throw new Error("Contenedor inexistente.");
   if (!lote) throw new Error("Lote inexistente.");
+  if (!lote.items?.length) throw new Error("El lote no tiene ítems.");
 
-  // regla más específica que puedas resolver:
+  // 2) Validar dimensiones del contenedor (tu schema permite null)
+  const largoM = toNumber(contenedor.largo_mts, 0);
+  const anchoM = toNumber(contenedor.ancho_mts, 0);
+  const altoM = toNumber(contenedor.alto_mts, 0);
+
+  requirePositive(largoM, "El contenedor no tiene largo_mts válido.");
+  requirePositive(anchoM, "El contenedor no tiene ancho_mts válido.");
+  requirePositive(altoM, "El contenedor no tiene alto_mts válido.");
+
+  // 3) Regla (la más específica en tu ejemplo)
   const regla = await prisma.cubicacionRegla.findFirst({
     where: {
       empresaId,
@@ -36,15 +63,97 @@ export async function evaluarPallet(params: {
     orderBy: { id: "desc" },
   });
 
+  // 4) Si lote EMPRESA_BULTO, debe existir la relación
+  if (lote.tipo_bulto === "EMPRESA_BULTO" && !lote.bultoEmpresa) {
+    throw new Error(
+      "El lote es EMPRESA_BULTO pero no tiene bultoEmpresa asociado (bulto_empresa_id)."
+    );
+  }
+
+  // 5) Armado de items para el cálculo desde el lote actual
+  const items = lote.items.map((it) => {
+    const tp = it.tipoProducto;
+
+    const unidades = toNumber(it.cantidad_unidades, 0);
+    requirePositive(unidades, `Item ${tp.codigo}: cantidad_unidades inválida.`);
+
+    const unidadesPorBulto = Math.max(
+      1,
+      toNumber(tp.unidad_entra_por_bulto, 1)
+    );
+    const cantidadBultos = ceilDiv(unidades, unidadesPorBulto);
+    requirePositive(
+      cantidadBultos,
+      `Item ${tp.codigo}: no se pudo derivar cantidadBultos.`
+    );
+
+    const codigo = String(tp.codigo ?? `PROD-${it.tipoProductoId}`).trim();
+    const descripcion = String(tp.descripcion ?? "");
+
+    const dimBultoMm =
+      lote.tipo_bulto === "EMPRESA_BULTO"
+        ? {
+            largo: toNumber(lote.bultoEmpresa!.largo_mm, 0),
+            ancho: toNumber(lote.bultoEmpresa!.ancho_mm, 0),
+            alto: toNumber(lote.bultoEmpresa!.alto_mm, 0),
+          }
+        : {
+            largo: toNumber(tp.largo_por_bulto, 0),
+            ancho: toNumber(tp.ancho_por_bulto, 0),
+            alto: toNumber(tp.alto_por_bulto, 0),
+          };
+
+    requirePositive(
+      dimBultoMm.largo,
+      `El producto ${codigo} no tiene largo de bulto válido.`
+    );
+    requirePositive(
+      dimBultoMm.ancho,
+      `El producto ${codigo} no tiene ancho de bulto válido.`
+    );
+    requirePositive(
+      dimBultoMm.alto,
+      `El producto ${codigo} no tiene alto de bulto válido.`
+    );
+
+    // Peso bulto: preferimos peso_por_bulto; si no, estimamos desde peso unidad.
+    const pesoPorBulto =
+      tp.peso_por_bulto != null ? toNumber(tp.peso_por_bulto, 0) : 0;
+
+    const pesoUnidad =
+      it.peso_unidad_kg != null
+        ? toNumber(it.peso_unidad_kg, 0)
+        : tp.peso_por_uniad_entrega != null
+        ? toNumber(tp.peso_por_uniad_entrega, 0)
+        : tp.peso_por_unidad_venta != null
+        ? toNumber(tp.peso_por_unidad_venta, 0)
+        : 0;
+
+    const pesoBultoKg =
+      pesoPorBulto > 0
+        ? pesoPorBulto
+        : Math.max(0, pesoUnidad) * unidadesPorBulto;
+
+    return {
+      tipoProductoId: it.tipoProductoId,
+      codigo,
+      descripcion,
+      cantidadBultos,
+      dimBultoMm,
+      pesoBultoKg,
+    };
+  });
+
+  // 6) Calcular plan
   const plan = calcularPalletPlan({
     contenedor: {
       id: contenedor.id,
       codigo: contenedor.codigo,
-      largo_mts: contenedor.largo_mts,
-      ancho_mts: contenedor.ancho_mts,
-      alto_mts: contenedor.alto_mts,
-      peso_pallet_kg: contenedor.peso_pallet_kg,
-      peso_max_kg: contenedor.peso_max_kg,
+      largo_mts: largoM,
+      ancho_mts: anchoM,
+      alto_mts: altoM,
+      peso_pallet_kg: toNumber(contenedor.peso_pallet_kg, 0),
+      peso_max_kg: toNumber(contenedor.peso_max_kg, 0),
     },
     reglas: regla
       ? {
@@ -53,72 +162,53 @@ export async function evaluarPallet(params: {
           permitirMezcla: regla.permitirMezcla,
         }
       : null,
-    mixPolicy: params.mixPolicy,
-    objective: params.objective,
-    items: lote.items.map((it) => ({
-      tipoProductoId: it.tipo_producto_id,
-      codigo: (it.tipoProducto as any).codigo ?? `PROD-${it.tipo_producto_id}`,
-      descripcion: (it.tipoProducto as any).descripcion ?? "",
-      cantidadBultos: it.cantidad_bultos,
-      dimBultoMm: {
-        largo: it.bulto_largo_mm,
-        ancho: it.bulto_ancho_mm,
-        alto: it.bulto_alto_mm,
-      },
-      pesoBultoKg: Number(it.peso_bulto_kg),
-    })),
+    mixPolicy,
+    objective,
+    items,
   });
 
-  // persistimos PalletPlan (solo resumen + items)
-  const saved = await prisma.$transaction(async (tx) => {
-    await tx.palletPlanItem.deleteMany({
-      where: {
-        plan: { lote_id: loteId, tipo_contenedor_id: tipoContenedorId },
-      },
-    });
-    await tx.palletPlan.deleteMany({
-      where: { lote_id: loteId, tipo_contenedor_id: tipoContenedorId },
-    });
+  // 7) Persistir a CubicacionPalletPlan (modelo actual)
+  const maxAlturaMm =
+    regla?.maxAlturaM != null
+      ? Math.round(Number(regla.maxAlturaM) * 1000)
+      : null;
 
-    const p = await tx.palletPlan.create({
-      data: {
-        lote_id: loteId,
-        tipo_contenedor_id: tipoContenedorId,
-        mix_policy: params.mixPolicy,
-        objective: params.objective,
+  const permitirMezclaFinal =
+    (regla?.permitirMezcla ?? true) && mixPolicy === "PERMITIR_MEZCLA";
 
-        pallets_requeridos: plan.palletsRequeridos,
-        cajas_en_pallet1: plan.pallet1.cajasTotales,
-        capas_pallet1: plan.pallet1.capas,
-        cajas_por_capa_pallet1: plan.pallet1.cajasPorCapa,
+  const saved = await prisma.cubicacionPalletPlan.upsert({
+    where: {
+      // @@unique([loteId, tipoContenedorId], map: "uq_lote_contenedor")
+      loteId_tipoContenedorId: { loteId, tipoContenedorId },
+    },
+    create: {
+      loteId,
+      tipoContenedorId,
+      permitir_mezcla: permitirMezclaFinal,
+      max_codigos_por_pallet: regla?.maxCodigosPorPallet ?? null,
+      max_altura_mm: maxAlturaMm,
 
-        ocupacion_base_pct: plan.pallet1.ocupacionBasePct,
-        ocupacion_volumen_pct: plan.pallet1.ocupacionVolumenPct,
+      pallets_necesarios: plan.palletsRequeridos,
+      ocupacion_volumen_pct: plan.pallet1.ocupacionVolumenPct,
+      peso_total_kg: plan.pallet1.pesoTotalKg,
+      altura_utilizada_mm: Math.round(plan.pallet1.alturaTotalM * 1000),
 
-        peso_total_pallet1_kg: plan.pallet1.pesoTotalKg,
-        altura_total_pallet1_m: plan.pallet1.alturaTotalM,
+      layout: plan as any,
+    },
+    update: {
+      permitir_mezcla: permitirMezclaFinal,
+      max_codigos_por_pallet: regla?.maxCodigosPorPallet ?? null,
+      max_altura_mm: maxAlturaMm,
 
-        warnings: plan.pallet1.warnings as any,
-      },
-      select: { id: true },
-    });
+      pallets_necesarios: plan.palletsRequeridos,
+      ocupacion_volumen_pct: plan.pallet1.ocupacionVolumenPct,
+      peso_total_kg: plan.pallet1.pesoTotalKg,
+      altura_utilizada_mm: Math.round(plan.pallet1.alturaTotalM * 1000),
 
-    if (plan.pallet1.items.length) {
-      await tx.palletPlanItem.createMany({
-        data: plan.pallet1.items.map((x) => ({
-          pallet_plan_id: p.id,
-          tipo_producto_id: x.tipoProductoId,
-          bultos_en_pallet1: x.bultosEnPallet1,
-          por_capa: x.porCapa,
-        })),
-      });
-    }
-
-    return p;
+      layout: plan as any,
+    },
+    select: { id: true },
   });
 
-  return {
-    plan,
-    palletPlanId: saved.id,
-  };
+  return { plan, palletPlanId: saved.id };
 }

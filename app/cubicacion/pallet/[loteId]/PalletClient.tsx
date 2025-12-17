@@ -1,17 +1,13 @@
 "use client";
 
 import { CubicacionPalletViewer3D } from "@/app/cubicacion/components/CubicacionPalletViewer3D";
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 
 /* =========================
    Types (plain, client-safe)
 ========================= */
 
-type DimMm = {
-  largo: number;
-  ancho: number;
-  alto: number;
-};
+type DimMm = { largo: number; ancho: number; alto: number };
 
 type Placement = {
   tipoProductoId: number;
@@ -37,38 +33,68 @@ type PalletPlanResult = {
   };
 };
 
-interface Props {
-  lote: {
+type ClientContenedor = {
+  id: number;
+  codigo: string;
+  descripcion: string;
+  largo_mts: number | null;
+  ancho_mts: number | null;
+  alto_mts: number | null;
+  peso_max_kg: number | null;
+  peso_pallet_kg?: number | null;
+};
+
+type ClientLote = {
+  id: number;
+  descripcion?: string | null;
+  items: Array<{
     id: number;
-    descripcion?: string | null;
-    items: {
+    tipoProductoId: number;
+    cantidad_unidades: number;
+    volumen_total_m3: number;
+    dim_unidad_mm?: any | null;
+    peso_unidad_kg?: number | null;
+
+    tipoProducto: {
       id: number;
-      cantidad_bultos: number;
-      tipoProducto: {
-        id: number;
-        codigo: string;
-        descripcion: string;
-      };
-    }[];
-  };
+      codigo: string;
+      descripcion: string;
 
-  contenedores: {
-    id: number;
-    codigo: string;
-    descripcion: string;
-    largo_mts: number;
-    ancho_mts: number;
-    alto_mts: number;
-    peso_max_kg: number;
-  }[];
+      // Para poder estimar bultos y mostrar dims estándar
+      unidad_entra_por_bulto: number;
+      largo_por_bulto: number;
+      ancho_por_bulto: number;
+      alto_por_bulto: number;
+    };
+  }>;
+};
 
+interface Props {
+  lote: ClientLote;
+  contenedores: ClientContenedor[];
   onEvaluar: (params: {
     tipoContenedorId: number;
     mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
     objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
-  }) => Promise<{
-    plan: PalletPlanResult;
-  }>;
+  }) => Promise<{ plan: PalletPlanResult }>;
+}
+
+/* =========================
+   Helpers
+========================= */
+
+function safeNumber(n: unknown, fallback = 0) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : fallback;
+}
+
+function ceilDiv(a: number, b: number) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return 0;
+  return Math.ceil(a / b);
+}
+
+function formatDimMm(d: { largo: number; ancho: number; alto: number }) {
+  return `${d.largo}×${d.ancho}×${d.alto} mm`;
 }
 
 /* =========================
@@ -88,6 +114,35 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  const contenedorSeleccionado = useMemo(() => {
+    if (!tipoContenedorId) return null;
+    return contenedores.find((c) => c.id === tipoContenedorId) ?? null;
+  }, [tipoContenedorId, contenedores]);
+
+  const loteResumen = useMemo(() => {
+    return lote.items.map((it) => {
+      const unPorBulto = safeNumber(it.tipoProducto.unidad_entra_por_bulto, 0);
+      const bultosEstimados = unPorBulto > 0 ? ceilDiv(it.cantidad_unidades, unPorBulto) : 0;
+
+      const dimBultoStd = {
+        largo: safeNumber(it.tipoProducto.largo_por_bulto, 0),
+        ancho: safeNumber(it.tipoProducto.ancho_por_bulto, 0),
+        alto: safeNumber(it.tipoProducto.alto_por_bulto, 0),
+      };
+
+      return {
+        id: it.id,
+        codigo: it.tipoProducto.codigo,
+        descripcion: it.tipoProducto.descripcion,
+        cantidadUnidades: it.cantidad_unidades,
+        unPorBulto,
+        bultosEstimados,
+        volumenTotalM3: it.volumen_total_m3,
+        dimBultoStd,
+      };
+    });
+  }, [lote.items]);
+
   /* =========================
      Handlers
   ========================= */
@@ -98,6 +153,20 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
 
     if (!tipoContenedorId) {
       setError("Seleccioná un tipo de pallet / contenedor.");
+      return;
+    }
+
+    const c = contenedorSeleccionado;
+    if (!c) {
+      setError("Contenedor inválido.");
+      return;
+    }
+
+    // Validación defensiva (tu schema permite null)
+    if (!c.largo_mts || !c.ancho_mts || !c.alto_mts) {
+      setError(
+        "El contenedor seleccionado no tiene dimensiones completas (largo/ancho/alto). Completá esos datos para poder calcular."
+      );
       return;
     }
 
@@ -125,26 +194,35 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
     <section className="space-y-6 bg-white p-6 rounded-lg shadow-sm">
       {/* Header */}
       <header className="space-y-1">
-        <h2 className="text-xl font-semibold text-slate-900">
-          Cubicación en pallet
-        </h2>
+        <h2 className="text-xl font-semibold text-slate-900">Cubicación en pallet</h2>
         <p className="text-sm text-slate-600">
-          A partir de los bultos ya armados, el sistema calcula la mejor forma de
-          acomodarlos en un pallet.
+          A partir del lote, el sistema calcula un layout de pallet para los ítems cargados.
         </p>
       </header>
 
       {/* Lote info */}
       <div className="rounded-md border bg-slate-50 p-3 text-sm">
         <p className="font-semibold text-slate-800">Lote #{lote.id}</p>
-        {lote.descripcion && (
-          <p className="text-slate-600 mt-1">{lote.descripcion}</p>
-        )}
+        {lote.descripcion && <p className="text-slate-600 mt-1">{lote.descripcion}</p>}
 
         <ul className="mt-2 list-disc pl-5 text-slate-700 text-xs space-y-1">
-          {lote.items.map((it) => (
+          {loteResumen.map((it) => (
             <li key={it.id}>
-              {it.tipoProducto.codigo} — {it.cantidad_bultos} bultos
+              <span className="font-medium">{it.codigo}</span>
+              {" — "}
+              {it.cantidadUnidades} un
+              {it.unPorBulto > 0 ? (
+                <>
+                  {" ("}
+                  {it.bultosEstimados} bultos estimados · {it.unPorBulto} un/bulto ·{" "}
+                  {formatDimMm(it.dimBultoStd)}
+                  {")"}
+                </>
+              ) : (
+                <span className="text-slate-500"> (sin unidad_entra_por_bulto)</span>
+              )}
+              {" — "}
+              {it.volumenTotalM3.toFixed(4)} m³
             </li>
           ))}
         </ul>
@@ -154,16 +232,12 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
       <div className="grid gap-4 md:grid-cols-3">
         {/* Contenedor */}
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">
-            Tipo de pallet / contenedor
-          </label>
+          <label className="text-sm font-medium text-slate-700">Tipo de pallet / contenedor</label>
           <select
             className="w-full border rounded-md px-3 py-2 text-sm"
             value={tipoContenedorId}
             onChange={(e) =>
-              setTipoContenedorId(
-                e.target.value === "" ? "" : Number(e.target.value)
-              )
+              setTipoContenedorId(e.target.value === "" ? "" : Number(e.target.value))
             }
           >
             <option value="">Seleccioná</option>
@@ -173,19 +247,29 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
               </option>
             ))}
           </select>
+
+          {contenedorSeleccionado && (
+            <p className="text-xs text-slate-500 mt-1">
+              Dimensiones:{" "}
+              {contenedorSeleccionado.largo_mts && contenedorSeleccionado.ancho_mts && contenedorSeleccionado.alto_mts
+                ? `${contenedorSeleccionado.largo_mts}×${contenedorSeleccionado.ancho_mts}×${contenedorSeleccionado.alto_mts} m`
+                : "incompletas"}
+              {" · "}
+              Peso máx:{" "}
+              {contenedorSeleccionado.peso_max_kg != null
+                ? `${contenedorSeleccionado.peso_max_kg} kg`
+                : "sin definir"}
+            </p>
+          )}
         </div>
 
         {/* Mezcla */}
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">
-            Mezcla de productos
-          </label>
+          <label className="text-sm font-medium text-slate-700">Mezcla de productos</label>
           <select
             className="w-full border rounded-md px-3 py-2 text-sm"
             value={mixPolicy}
-            onChange={(e) =>
-              setMixPolicy(e.target.value as "NO_MEZCLAR" | "PERMITIR_MEZCLA")
-            }
+            onChange={(e) => setMixPolicy(e.target.value as "NO_MEZCLAR" | "PERMITIR_MEZCLA")}
           >
             <option value="PERMITIR_MEZCLA">Permitir mezcla</option>
             <option value="NO_MEZCLAR">No mezclar (1 SKU por pallet)</option>
@@ -194,30 +278,19 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
 
         {/* Objetivo */}
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">
-            Objetivo de cubicación
-          </label>
+          <label className="text-sm font-medium text-slate-700">Objetivo de cubicación</label>
           <select
             className="w-full border rounded-md px-3 py-2 text-sm"
             value={objective}
             onChange={(e) =>
               setObjective(
-                e.target.value as
-                  | "OPERATIVO_ESTABLE"
-                  | "OPTIMIZAR_VOLUMEN"
-                  | "CUIDADO_PRODUCTO"
+                e.target.value as "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO"
               )
             }
           >
-            <option value="OPERATIVO_ESTABLE">
-              Operativo / estable (capas homogéneas)
-            </option>
-            <option value="OPTIMIZAR_VOLUMEN">
-              Optimizar volumen (mayor ocupación)
-            </option>
-            <option value="CUIDADO_PRODUCTO">
-              Cuidado del producto (pesados abajo)
-            </option>
+            <option value="OPERATIVO_ESTABLE">Operativo / estable</option>
+            <option value="OPTIMIZAR_VOLUMEN">Optimizar volumen</option>
+            <option value="CUIDADO_PRODUCTO">Cuidado del producto</option>
           </select>
         </div>
       </div>
@@ -248,30 +321,22 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
           <div className="grid gap-3 md:grid-cols-4 text-sm">
             <div className="rounded-md border p-3">
               <p className="text-slate-500">Cajas en pallet #1</p>
-              <p className="font-semibold text-lg">
-                {result.pallet1.cajasTotales}
-              </p>
+              <p className="font-semibold text-lg">{result.pallet1.cajasTotales}</p>
             </div>
 
             <div className="rounded-md border p-3">
               <p className="text-slate-500">Capas</p>
-              <p className="font-semibold text-lg">
-                {result.pallet1.capas}
-              </p>
+              <p className="font-semibold text-lg">{result.pallet1.capas}</p>
             </div>
 
             <div className="rounded-md border p-3">
               <p className="text-slate-500">Ocupación volumen</p>
-              <p className="font-semibold text-lg">
-                {result.pallet1.ocupacionVolumenPct.toFixed(1)}%
-              </p>
+              <p className="font-semibold text-lg">{result.pallet1.ocupacionVolumenPct.toFixed(1)}%</p>
             </div>
 
             <div className="rounded-md border p-3">
               <p className="text-slate-500">Peso total</p>
-              <p className="font-semibold text-lg">
-                {result.pallet1.pesoTotalKg.toFixed(1)} kg
-              </p>
+              <p className="font-semibold text-lg">{result.pallet1.pesoTotalKg.toFixed(1)} kg</p>
             </div>
           </div>
 
@@ -289,9 +354,7 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
 
           {/* Viewer */}
           <div className="space-y-2">
-            <p className="text-sm font-medium text-slate-700">
-              Previsualización 3D — Pallet #1
-            </p>
+            <p className="text-sm font-medium text-slate-700">Previsualización 3D — Pallet #1</p>
 
             <CubicacionPalletViewer3D
               palletDimMm={result.pallet1.palletDimMm}
@@ -299,8 +362,7 @@ export function PalletClient({ lote, contenedores, onEvaluar }: Props) {
             />
 
             <p className="text-xs text-slate-500">
-              La visualización representa el layout real calculado para el primer
-              pallet.
+              La visualización representa el layout calculado para el primer pallet.
             </p>
           </div>
         </div>

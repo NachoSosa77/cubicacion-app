@@ -5,18 +5,12 @@ import { prisma } from "@/lib/prisma";
 export type CreateLoteInput = {
   empresaId: number;
   descripcion?: string | null;
-  // cada item representa un SKU y cuántos bultos/cajas resultaron
   items: Array<{
     tipoProductoId: number;
-    cantidadBultos: number;
-
-    // dimensiones del bulto (mm)
-    bultoLargoMm: number;
-    bultoAnchoMm: number;
-    bultoAltoMm: number;
-
-    // peso del bulto (kg)
-    pesoBultoKg: number;
+    cantidadUnidades: number;
+    volumenTotalM3: number;
+    dimUnidadMm?: { largo: number; ancho: number; alto: number } | undefined;
+    pesoUnidadKg?: number | undefined;
   }>;
 };
 
@@ -26,24 +20,37 @@ export async function createLoteFromBulto(input: CreateLoteInput) {
   return prisma.$transaction(async (tx) => {
     const lote = await tx.cubicacionLote.create({
       data: {
-        empresa_id: input.empresaId,
+        empresaId: input.empresaId,
         descripcion: input.descripcion ?? null,
       },
       select: { id: true },
     });
 
     await tx.cubicacionLoteItem.createMany({
-      data: input.items.map((it) => ({
-        lote_id: lote.id,
-        tipo_producto_id: it.tipoProductoId,
-        cantidad_bultos: it.cantidadBultos,
-        bulto_largo_mm: it.bultoLargoMm,
-        bulto_ancho_mm: it.bultoAnchoMm,
-        bulto_alto_mm: it.bultoAltoMm,
-        peso_bulto_kg: it.pesoBultoKg,
-      })),
+      data: input.items.map((it) => {
+        const base = {
+          loteId: lote.id,
+          tipoProductoId: it.tipoProductoId,
+          cantidad_unidades: it.cantidadUnidades,
+          volumen_total_m3: it.volumenTotalM3,
+        };
+
+        // JSON: no pasar null; solo incluir si hay valor
+        const withDim =
+          it.dimUnidadMm !== undefined
+            ? { ...base, dim_unidad_mm: it.dimUnidadMm }
+            : base;
+
+        // Float?: null sí es aceptable, pero mantengámoslo consistente: solo incluir si hay valor
+        const withPeso =
+          it.pesoUnidadKg !== undefined
+            ? { ...withDim, peso_unidad_kg: it.pesoUnidadKg }
+            : withDim;
+
+        return withPeso;
+      }),
     });
 
-    return lote;
+    return { loteId: lote.id };
   });
 }
