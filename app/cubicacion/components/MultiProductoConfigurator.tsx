@@ -59,6 +59,8 @@ type OpcionCubicacion = {
   data3d: CubicacionBulto3DInput;
 };
 
+type PackStdPolicy = "LIMITADO_POR_PRODUCTO" | "MAXIMIZAR_POR_CUBICACION";
+
 /* ============================
    Utils
 ============================ */
@@ -215,6 +217,10 @@ export function MultiProductoConfigurator({
 
   const [opcionSeleccionada, setOpcionSeleccionada] = useState<number | null>(
     null
+  );
+
+  const [packStdPolicy, setPackStdPolicy] = useState<PackStdPolicy>(
+    "LIMITADO_POR_PRODUCTO"
   );
 
   const router = useRouter();
@@ -407,6 +413,7 @@ export function MultiProductoConfigurator({
     if (itemsMultiReal.length === 1) {
       const it = itemsMultiReal[0];
       const producto = productos.find((p) => p.id === it.productoId);
+
       if (producto) {
         const bL = numPos((producto as any).largo_por_bulto);
         const bA = numPos((producto as any).ancho_por_bulto);
@@ -433,18 +440,42 @@ export function MultiProductoConfigurator({
               alto: res.dimInternaBulto.alto,
             };
 
-            const cap = gridCapacity(dimInterna, it.dimUnidadMm);
-            const unidadesEnBulto1 = Math.min(it.cantidadUnidades, cap);
+            const capFisica = gridCapacity(dimInterna, it.dimUnidadMm);
+
+            const packDeclaradoRaw = Number(
+              (producto as any).unidades_por_unidad_entrega ??
+                (producto as any).unidad_entra_por_bulto ??
+                0
+            );
+            const packDeclarado =
+              Number.isFinite(packDeclaradoRaw) && packDeclaradoRaw > 0
+                ? packDeclaradoRaw
+                : null;
+
+            const capacidadElegida =
+              packStdPolicy === "MAXIMIZAR_POR_CUBICACION"
+                ? capFisica
+                : packDeclarado ?? capFisica;
+
+            const unidadesEnBulto1 = Math.min(
+              it.cantidadUnidades,
+              capacidadElegida
+            );
             const bultosNecesariosEstimados =
-              cap > 0 ? ceilDiv(it.cantidadUnidades, cap) : 999999;
+              capacidadElegida > 0
+                ? ceilDiv(it.cantidadUnidades, capacidadElegida)
+                : 999999;
 
             // Regla 1: NO mostrar ocupación para bulto estándar (pack cerrado)
             const ocupacionPct = null;
 
+            // Viewer “serio”: si geométricamente no entra ni 1 unidad, no dibujamos contenido
+            const unidadesPreview = capFisica > 0 ? unidadesEnBulto1 : 0;
+
             const placements = buildGridPlacements(
               dimInterna,
               it.dimUnidadMm,
-              unidadesEnBulto1
+              unidadesPreview
             );
 
             const data3d: CubicacionBulto3DInput = {
@@ -473,7 +504,9 @@ export function MultiProductoConfigurator({
               kind: "PRODUCTO_ESTANDAR",
               key: `producto-std-${producto.id}`,
               titulo: `Bulto estándar (producto) · ${codigo || "Producto"}`,
-              subtitulo: `Pack definido por el producto · ${bL}×${bA}×${bH} mm`,
+              subtitulo: `Pack definido por el producto · ${bL}×${bA}×${bH} mm${
+                packDeclarado ? ` · ${packDeclarado} unid/bulto` : ""
+              }`,
               ocupacionPct,
               unidadesTotales: it.cantidadUnidades,
               unidadesEnBulto1,
@@ -568,6 +601,7 @@ export function MultiProductoConfigurator({
     topBultosEmpresa,
     isMultiProducto,
     packingPolicy,
+    packStdPolicy,
   ]);
 
   /* ============================
@@ -704,8 +738,8 @@ export function MultiProductoConfigurator({
         const { loteId } = await onSubmit(payload);
         setMensaje("Configuración guardada correctamente.");
         router.push(`/cubicacion/pallet/${loteId}`);
-        router.refresh(); // opcional (si la page de pallet lee data server-side)
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error(err);
         setErrores(["No se pudo guardar la configuración."]);
       }
@@ -939,6 +973,7 @@ export function MultiProductoConfigurator({
                           {opt.unidadesEnBulto1}/{opt.unidadesTotales}
                         </span>
                       </p>
+
                       <p>
                         Bultos estimados:{" "}
                         <span className="font-semibold">
@@ -1014,41 +1049,6 @@ export function MultiProductoConfigurator({
           </div>
         )}
 
-        {/* Panel de decisión */}
-        {selectedOpt && (
-          <div className="rounded-md border bg-slate-50 p-3 text-sm">
-            <p className="font-semibold text-slate-900">
-              Resumen de la opción seleccionada
-            </p>
-            <div className="mt-2 grid gap-2 md:grid-cols-3 text-sm">
-              <div>
-                <p className="text-slate-600">Entran en bulto 1</p>
-                <p className="font-semibold">
-                  {selectedOpt.unidadesEnBulto1}/{selectedOpt.unidadesTotales}
-                </p>
-              </div>
-              <div>
-                <p className="text-slate-600">Bultos necesarios (estimado)</p>
-                <p className="font-semibold">
-                  {selectedOpt.bultosNecesariosEstimados}
-                </p>
-              </div>
-              <div>
-                <p className="text-slate-600">
-                  {selectedIsStd ? "Tipo de pack" : "Ocupación"}
-                </p>
-                <p className="font-semibold">
-                  {selectedIsStd
-                    ? "Cerrado (producto)"
-                    : typeof selectedOpt.ocupacionPct === "number"
-                    ? `${selectedOpt.ocupacionPct.toFixed(1)}%`
-                    : "No disponible"}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ✅ Packing policy: SOLO para bulto empresa */}
         {selectedIsEmpresa && (
           <div className="rounded-md border bg-white p-3 space-y-2">
@@ -1083,6 +1083,80 @@ export function MultiProductoConfigurator({
               Cambiar la estrategia recalcula el layout del primer bulto
               (preview fiel).
             </p>
+          </div>
+        )}
+
+        {/* ✅ Toggle: SOLO para bulto estándar */}
+        {selectedIsStd && (
+          <div className="rounded-md border bg-white p-3 space-y-2">
+            <p className="text-sm font-semibold text-slate-900">
+              Criterio para bulto estándar del producto
+            </p>
+
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                checked={packStdPolicy === "LIMITADO_POR_PRODUCTO"}
+                onChange={() => setPackStdPolicy("LIMITADO_POR_PRODUCTO")}
+              />
+              <span>
+                <strong>Respetar pack del producto</strong>
+                <br />
+                <span className="text-xs text-slate-500">
+                  Usa el límite declarado (unidades_por_unidad_entrega).
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                checked={packStdPolicy === "MAXIMIZAR_POR_CUBICACION"}
+                onChange={() => setPackStdPolicy("MAXIMIZAR_POR_CUBICACION")}
+              />
+              <span>
+                <strong>Maximizar por cubicación</strong>
+                <br />
+                <span className="text-xs text-slate-500">
+                  Llena el bulto según capacidad física por medidas.
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
+
+        {/* Panel de decisión */}
+        {selectedOpt && (
+          <div className="rounded-md border bg-slate-50 p-3 text-sm">
+            <p className="font-semibold text-slate-900">
+              Resumen de la opción seleccionada
+            </p>
+            <div className="mt-2 grid gap-2 md:grid-cols-3 text-sm">
+              <div>
+                <p className="text-slate-600">Entran en bulto 1</p>
+                <p className="font-semibold">
+                  {selectedOpt.unidadesEnBulto1}/{selectedOpt.unidadesTotales}
+                </p>
+              </div>
+              <div>
+                <p className="text-slate-600">Bultos necesarios (estimado)</p>
+                <p className="font-semibold">
+                  {selectedOpt.bultosNecesariosEstimados}
+                </p>
+              </div>
+              <div>
+                <p className="text-slate-600">
+                  {selectedIsStd ? "Tipo de pack" : "Ocupación"}
+                </p>
+                <p className="font-semibold">
+                  {selectedIsStd
+                    ? "Cerrado (producto)"
+                    : typeof selectedOpt.ocupacionPct === "number"
+                    ? `${selectedOpt.ocupacionPct.toFixed(1)}%`
+                    : "No disponible"}
+                </p>
+              </div>
+            </div>
           </div>
         )}
 

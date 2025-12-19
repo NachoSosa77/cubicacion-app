@@ -167,6 +167,22 @@ export async function evaluarPallet(params: {
     items,
   });
 
+  const pls = (plan as any)?.pallet1?.placements ?? [];
+  const xs = pls.map((p: any) => Number(p.posCentroMm?.x ?? p.x ?? 0));
+  const zs = pls.map((p: any) => Number(p.posCentroMm?.z ?? p.z ?? 0));
+
+  const min = (a: number[]) => (a.length ? Math.min(...a) : 0);
+  const max = (a: number[]) => (a.length ? Math.max(...a) : 0);
+
+  /* console.log("PALLET DEBUG placements:", {
+    count: pls.length,
+    xMin: min(xs),
+    xMax: max(xs),
+    zMin: min(zs),
+    zMax: max(zs),
+    sample: pls.slice(0, 5),
+  }); */
+
   // 7) Persistir a CubicacionPalletPlan (modelo actual)
   const maxAlturaMm =
     regla?.maxAlturaM != null
