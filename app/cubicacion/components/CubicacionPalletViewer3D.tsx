@@ -23,7 +23,7 @@ type Placement = {
 };
 
 interface Props {
-  palletDimMm: DimMm;
+  palletDimMm: DimMm; // base del pallet (largo/ancho) + alto máximo (NO visual)
   placements: Placement[];
 }
 
@@ -34,31 +34,46 @@ interface Props {
 const mmToM = (v: number) => (Number.isFinite(v) ? v / 1000 : 0);
 
 /* =========================
+   Constantes visuales
+========================= */
+
+// Pallet físico real (madera)
+const PALLET_REAL_ALTO_MM = 150;
+const PALLET_REAL_COLOR = "#8b5a2b";
+
+/* =========================
    Meshes
 ========================= */
 
-function PalletMesh({ dim }: { dim: DimMm }) {
+function PalletMeshReal({ dim }: { dim: DimMm }) {
   const largo = mmToM(dim.largo);
   const ancho = mmToM(dim.ancho);
-  const alto = mmToM(dim.alto);
+  const alto = mmToM(PALLET_REAL_ALTO_MM);
 
   return (
-    <mesh position={[0, -alto / 2, 0]}>
+    <mesh position={[0, alto / 2, 0]} receiveShadow>
       <boxGeometry args={[largo, alto, ancho]} />
-      <meshStandardMaterial color="#d1d5db" transparent opacity={0.35} />
-      <Edges scale={1.01} color="#6b7280" />
+      <meshStandardMaterial
+        color={PALLET_REAL_COLOR}
+        roughness={0.9}
+        metalness={0.05}
+      />
+      <Edges scale={1.01} color="#5b3a1a" />
     </mesh>
   );
 }
 
 function CajaMesh({ p }: { p: Placement }) {
+  const palletAltoM = mmToM(PALLET_REAL_ALTO_MM);
+
   return (
     <mesh
       position={[
         mmToM(p.posCentroMm.x),
-        mmToM(p.posCentroMm.y),
+        mmToM(p.posCentroMm.y) + palletAltoM,
         mmToM(p.posCentroMm.z),
       ]}
+      castShadow
     >
       <boxGeometry
         args={[
@@ -67,8 +82,12 @@ function CajaMesh({ p }: { p: Placement }) {
           mmToM(p.dimMm.ancho),
         ]}
       />
-      <meshStandardMaterial color="#6366f1" roughness={0.6} metalness={0.05} />
-      <Edges scale={1.01} color="#312e81" />
+      <meshStandardMaterial
+        color="#4f46e5"
+        roughness={0.6}
+        metalness={0.05}
+      />
+      <Edges scale={1.01} color="#f5f5f5" />
     </mesh>
   );
 }
@@ -79,36 +98,29 @@ function CajaMesh({ p }: { p: Placement }) {
 
 export function CubicacionPalletViewer3D({ palletDimMm, placements }: Props) {
   const { camDist, near, far, gridSize, gridDivisions } = useMemo(() => {
-    const maxDimMm = Math.max(
-      palletDimMm?.largo ?? 0,
-      palletDimMm?.ancho ?? 0,
-      palletDimMm?.alto ?? 0
-    );
+    const baseMm = Math.max(palletDimMm.largo, palletDimMm.ancho);
+    const heightMm =
+      placements.length > 0
+        ? Math.max(...placements.map((p) => p.posCentroMm.y + p.dimMm.alto))
+        : PALLET_REAL_ALTO_MM;
 
-    // Distancia de cámara en función del tamaño máximo del pallet
-    const dist = mmToM(maxDimMm * 1.6);
+    const maxMm = Math.max(baseMm, heightMm);
 
-    // Plano de recorte: evitar clipping
-    const nearVal = Math.max(0.01, dist / 100);
-    const farVal = Math.max(50, dist * 10);
-
-    // Grid proporcional (en metros)
-    const baseM = mmToM(maxDimMm);
-    const size = Math.max(2, baseM * 2); // al menos 2m
-    const divisions = Math.min(50, Math.max(10, Math.round(size)));
+    const dist = mmToM(maxMm * 1.6);
 
     return {
-      camDist: dist > 0 ? dist : 3,
-      near: nearVal,
-      far: farVal,
-      gridSize: size,
-      gridDivisions: divisions,
+      camDist: dist || 3,
+      near: 0.01,
+      far: Math.max(50, dist * 10),
+      gridSize: Math.max(2, mmToM(baseMm * 2)),
+      gridDivisions: Math.min(50, Math.max(10, Math.round(mmToM(baseMm * 2)))),
     };
-  }, [palletDimMm]);
+  }, [palletDimMm, placements]);
 
   return (
     <div className="w-full h-105 rounded-md border bg-slate-100">
       <Canvas
+        shadows
         camera={{
           position: [camDist, camDist, camDist],
           fov: 45,
@@ -118,24 +130,33 @@ export function CubicacionPalletViewer3D({ palletDimMm, placements }: Props) {
       >
         {/* Lights */}
         <ambientLight intensity={0.6} />
-        <directionalLight position={[5, 10, 5]} intensity={0.8} />
-        <directionalLight position={[-5, 5, -5]} intensity={0.4} />
+        <directionalLight
+          position={[5, 10, 5]}
+          intensity={0.9}
+          castShadow
+        />
+        <directionalLight position={[-5, 6, -5]} intensity={0.4} />
 
-        {/* Helpers */}
-        <gridHelper args={[gridSize, gridDivisions, "#cbd5f5", "#e5e7eb"]} />
+        {/* Grid */}
+        <gridHelper
+          args={[gridSize, gridDivisions, "#cbd5f5", "#e5e7eb"]}
+        />
 
-        {/* Pallet */}
-        <PalletMesh dim={palletDimMm} />
+        {/* Pallet real */}
+        <PalletMeshReal dim={palletDimMm} />
 
-        {/* Cajas */}
+        {/* Bultos */}
         {placements.map((p, i) => (
-          <CajaMesh key={`${p.tipoProductoId}-${p.codigo}-${p.capa}-${i}`} p={p} />
+          <CajaMesh
+            key={`${p.tipoProductoId}-${p.codigo}-${p.capa}-${i}`}
+            p={p}
+          />
         ))}
 
         {/* Controls */}
         <OrbitControls
           makeDefault
-          target={[0, 0, 0]}
+          target={[0, mmToM(PALLET_REAL_ALTO_MM), 0]}
           enablePan
           enableZoom
           enableRotate

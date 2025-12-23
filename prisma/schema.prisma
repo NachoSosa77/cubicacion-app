@@ -342,6 +342,8 @@ model TransporteClasificacion {
   transportes      Transporte[]
   reglasCubicacion CubicacionRegla[]
 
+  camionPlans CubicacionCamionPlan[]
+
   @@map("transporte_clasificacion")
 }
 
@@ -678,6 +680,8 @@ model CubicacionLote {
   items   CubicacionLoteItem[]
   pallets CubicacionPalletPlan[]
 
+  camionPlans CubicacionCamionPlan[]
+
   bulto_layout Json? @db.Json
 
   @@index([empresaId], map: "idx_lote_empresa")
@@ -733,4 +737,39 @@ model CubicacionPalletPlan {
   @@unique([loteId, tipoContenedorId], map: "uq_lote_contenedor")
   @@index([loteId], map: "idx_pallet_plan_lote")
   @@map("cubicacion_pallet_plan")
+}
+
+enum CamionStrategy {
+  ESTABLE
+  OPTIMIZAR
+  DESCARGA_RAPIDA
+}
+
+model CubicacionCamionPlan {
+  id Int @id @default(autoincrement())
+
+  loteId       Int @map("lote_id")
+  transporteId Int @map("transporte_id")
+
+  strategy CamionStrategy
+
+  pallets_totales     Int
+  pallets_en_camion   Int
+  camiones_requeridos Int
+  peso_total_kg       Float
+  ocupacion_base_pct  Decimal @db.Decimal(6, 2)
+
+  // layout completo (camionDimMm + placements + warnings + etc.)
+  layout Json @db.Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  lote       CubicacionLote          @relation(fields: [loteId], references: [id], onDelete: Cascade)
+  transporte TransporteClasificacion @relation(fields: [transporteId], references: [id])
+
+  @@unique([loteId, transporteId, strategy], map: "uq_camion_plan_lote_transporte_strategy")
+  @@index([loteId], map: "idx_camion_plan_lote")
+  @@index([transporteId], map: "idx_camion_plan_transporte")
+  @@map("cubicacion_camion_plan")
 }

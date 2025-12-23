@@ -1,6 +1,9 @@
+// app/cubicacion/pallet/[loteId]/page.tsx (ajustá ruta si difiere)
+
 import { prisma } from "@/lib/prisma";
-import { evaluarPallet } from "../../actions/evaluarPallet";
-import { toPlain } from "../../lib/toPlain"; // ajustá ruta si cambia
+import { previewPalletPlan } from "../../actions/previewPalletPlan";
+import { savePalletPlan } from "../../actions/savePalletPlan";
+import { toPlain } from "../../lib/toPlain";
 import { PalletClient } from "./PalletClient";
 
 export default async function PalletPage({
@@ -22,20 +25,21 @@ export default async function PalletPage({
 
   const lote = await prisma.cubicacionLote.findUnique({
     where: { id: loteId },
-    include: { items: { include: { tipoProducto: true } } },
+    include: { items: { include: { tipoProducto: true } }, bultoEmpresa: true },
   });
 
   if (!lote) return <div className="p-6">Lote no encontrado.</div>;
 
   const empresaId = lote.empresaId;
 
-  async function onEvaluar(form: {
+  // ✅ 1) Preview: NO guarda, solo calcula y devuelve el plan
+  async function onPreview(form: {
     tipoContenedorId: number;
     mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
     objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
   }) {
     "use server";
-    return evaluarPallet({
+    return previewPalletPlan({
       empresaId,
       loteId,
       tipoContenedorId: form.tipoContenedorId,
@@ -44,12 +48,30 @@ export default async function PalletPage({
     });
   }
 
+  // ✅ 2) Guardar: persiste el plan que el usuario ya vio
+  async function onGuardar(input: {
+    tipoContenedorId: number;
+    mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
+    objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
+    plan: unknown; // viene del client; lo tipamos a JSON en el action
+  }) {
+    "use server";
+    return savePalletPlan({
+      empresaId,
+      loteId,
+      tipoContenedorId: input.tipoContenedorId,
+      mixPolicy: input.mixPolicy,
+      objective: input.objective,
+    });
+  }
+
   return (
     <div className="p-6 space-y-6">
       <PalletClient
         lote={toPlain(lote)}
         contenedores={toPlain(contenedores)}
-        onEvaluar={onEvaluar}
+        onPreview={onPreview}
+        onGuardar={onGuardar}
       />
     </div>
   );
