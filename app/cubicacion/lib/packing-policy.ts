@@ -12,7 +12,7 @@ export const PACKING_POLICY_LABELS: Record<
   }
 > = {
   OPERATIVO_AGRUPADO: {
-    titulo: "Operativa (agrupar por producto)",
+    titulo: "Operativa (no mezcla, por producto)",
     descripcion:
       "Prioriza facilidad de armado y conteo en depósito. Los productos se agrupan dentro del bulto.",
   },
@@ -22,7 +22,7 @@ export const PACKING_POLICY_LABELS: Record<
       "Prioriza ocupación del bulto y reducción de cantidad de bultos.",
   },
   BUSCAR_MEJOR_ACOMODO: {
-    titulo: "Buscar mejor acomodo (más preciso)",
+    titulo: "Mejor acomodo (mezcla + más intentos, puede demorar)",
     descripcion:
       "Ejecuta más intentos y estrategias para mejorar el resultado. Puede demorar unos segundos.",
   },

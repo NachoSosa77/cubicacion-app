@@ -1,3 +1,5 @@
+// app/cubicacion/lib/evaluar-bultos-empresa.ts
+
 import type { IEmpresaBulto } from "../actions/empresaBultoActions";
 import { type ResultadoCubicacionMultiProducto } from "./cubicacion-multiproducto";
 
@@ -140,7 +142,7 @@ function motivoNoEntra(codigo: string, dim: DimMm, di: DimMm): string {
   if (entra) return "";
 
   const ejemplos = ors
-    .slice(0, 3) // suficiente para explicar sin spam
+    .slice(0, 3)
     .map((o) => `${o.largo}×${o.ancho}×${o.alto}`)
     .join(" | ");
 
@@ -148,7 +150,8 @@ function motivoNoEntra(codigo: string, dim: DimMm, di: DimMm): string {
 }
 
 /* ============================
-   Packing geométrico bulto 1
+   Packing geométrico (mezcla permitida)
+   - Usado para OPTIMIZAR_VOLUMEN y BUSCAR_MEJOR_ACOMODO
 ============================ */
 
 function packingPrimerBulto3D(
@@ -161,13 +164,29 @@ function packingPrimerBulto3D(
   const placements: PlacementMm[] = [];
   const instrucciones: InstruccionArmado[] = [];
 
+  // Cursor por “esquinas” en X/Z
   let cursorX = 0;
-  let cursorY = 0;
   let cursorZ = 0;
   let initialized = false;
 
+  // Capas
+  let layerBaseY = 0; // base de capa
+  let layerHeight = 0; // alto max en capa actual
+
   let unidadesEnBulto1 = 0;
   let volumenUsadoM3 = 0;
+
+  const init = () => {
+    if (initialized) return;
+    cursorX = -di.largo / 2;
+    cursorZ = -di.ancho / 2;
+    layerBaseY = -di.alto / 2;
+    layerHeight = 0;
+    initialized = true;
+  };
+
+  const entraEnAltura = (altoItem: number) =>
+    layerBaseY + altoItem <= di.alto / 2;
 
   for (const it of items) {
     const codigo = it.codigoProducto?.trim() || `PROD-${it.productoId}`;
@@ -186,50 +205,53 @@ function packingPrimerBulto3D(
     let colocadas = 0;
     let cortoPorAltura = false;
 
-    const init = () => {
-      if (!initialized) {
-        cursorX = -di.largo / 2 + orient.largo / 2;
-        cursorY = -di.alto / 2 + orient.alto / 2;
-        cursorZ = -di.ancho / 2 + orient.ancho / 2;
-        initialized = true;
-      }
-    };
-
     for (let i = 0; i < it.cantidadUnidades; i++) {
       init();
 
-      // corta SOLO este producto (no global)
-      if (cursorY + orient.alto / 2 > di.alto / 2) {
+      if (!entraEnAltura(orient.alto)) {
         cortoPorAltura = true;
         dbg("[FULL]", {
           codigo,
           razon: "sin altura",
-          cursor: { cursorX, cursorY, cursorZ },
+          layerBaseY,
+          layerHeight,
           orient,
           di,
           colocadasHastaAhora: colocadas,
         });
-        break;
+        break; // corta SOLO este producto
       }
+
+      const posCentroX = cursorX + orient.largo / 2;
+      const posCentroZ = cursorZ + orient.ancho / 2;
+      const posCentroY = layerBaseY + orient.alto / 2;
 
       placements.push({
         productoId: it.productoId,
         codigo,
         dimUnidadMm: orient,
-        posCentroMm: { x: cursorX, y: cursorY, z: cursorZ },
+        posCentroMm: { x: posCentroX, y: posCentroY, z: posCentroZ },
       });
 
       unidadesEnBulto1++;
       colocadas++;
       volumenUsadoM3 += it.volumenUnidadM3;
 
+      layerHeight = Math.max(layerHeight, orient.alto);
+
+      // avance X
       cursorX += orient.largo;
-      if (cursorX + orient.largo / 2 > di.largo / 2) {
-        cursorX = -di.largo / 2 + orient.largo / 2;
+
+      // si se pasa en X, resetea X y avanza Z
+      if (cursorX + orient.largo > di.largo / 2) {
+        cursorX = -di.largo / 2;
         cursorZ += orient.ancho;
-        if (cursorZ + orient.ancho / 2 > di.ancho / 2) {
-          cursorZ = -di.ancho / 2 + orient.ancho / 2;
-          cursorY += orient.alto;
+
+        // si se pasa en Z, nueva capa
+        if (cursorZ + orient.ancho > di.ancho / 2) {
+          cursorZ = -di.ancho / 2;
+          layerBaseY += layerHeight;
+          layerHeight = 0;
         }
       }
     }
@@ -246,7 +268,7 @@ function packingPrimerBulto3D(
       codigo,
       colocadas,
       cortoPorAltura,
-      cursorFinal: { cursorX, cursorY, cursorZ },
+      cursorFinal: { cursorX, layerBaseY, cursorZ, layerHeight },
       unidadesEnBulto1Global: unidadesEnBulto1,
     });
   }
@@ -262,19 +284,6 @@ function packingPrimerBulto3D(
     unidadesEnBulto1,
     bultosNecesariosEstimados,
     ocupacionPct: capM3 > 0 ? Math.min(100, (volumenUsadoM3 / capM3) * 100) : 0,
-    instrucciones: instrucciones.map((i) => ({
-      codigo: i.codigo,
-      unidadesEnBulto1: i.unidadesEnBulto1,
-      capSolo: i.capacidadTeoricaSiSolo,
-      orient: i.orientacionMm,
-    })),
-    placementsPorProducto: placements.reduce<Record<string, number>>(
-      (acc, p) => {
-        acc[p.codigo] = (acc[p.codigo] ?? 0) + 1;
-        return acc;
-      },
-      {}
-    ),
   });
 
   return {
@@ -290,7 +299,7 @@ function packingPrimerBulto3D(
 }
 
 /* ============================
-   Estrategias de orden
+   Estrategias de orden + utilidades
 ============================ */
 
 function ordenarItems(
@@ -322,13 +331,134 @@ function esMejor(a: Packing3D, b: Packing3D) {
 }
 
 /* ============================
-   API pública
+   ✅ OPERATIVO: NO mezcla (agrupado por producto)
+   - Estima bultos por SKU: sum(ceil(qty/capSolo))
+   - Preview bulto1: SOLO primer SKU del orden (estable)
 ============================ */
 
-export function evaluarTopBultosEmpresa(
+function buildGridPlacementsMm(
+  di: DimMm,
+  orient: DimMm,
+  count: number,
+  productoId: number,
+  codigo: string
+): PlacementMm[] {
+  const nx = Math.floor(di.largo / orient.largo);
+  const nz = Math.floor(di.ancho / orient.ancho);
+  const ny = Math.floor(di.alto / orient.alto);
+
+  if (nx <= 0 || nz <= 0 || ny <= 0) return [];
+
+  const max = nx * nz * ny;
+  const take = Math.max(0, Math.min(count, max));
+
+  const startX = -di.largo / 2 + orient.largo / 2;
+  const startZ = -di.ancho / 2 + orient.ancho / 2;
+  const startY = -di.alto / 2 + orient.alto / 2;
+
+  const out: PlacementMm[] = [];
+  let placed = 0;
+
+  for (let iy = 0; iy < ny && placed < take; iy++) {
+    for (let iz = 0; iz < nz && placed < take; iz++) {
+      for (let ix = 0; ix < nx && placed < take; ix++) {
+        out.push({
+          productoId,
+          codigo,
+          dimUnidadMm: orient,
+          posCentroMm: {
+            x: startX + ix * orient.largo,
+            y: startY + iy * orient.alto,
+            z: startZ + iz * orient.ancho,
+          },
+        });
+        placed++;
+      }
+    }
+  }
+
+  return out;
+}
+
+function packingOperativoAgrupado(
+  items: MultiProductoUnidadInputReal[],
+  di: DimMm
+): Packing3D {
+  const orden = ordenarItems(items, "AGRUPADO");
+
+  const unidadesTotales = orden.reduce((a, b) => a + b.cantidadUnidades, 0);
+  const capM3 = volumenM3(di);
+
+  const instrucciones: InstruccionArmado[] = [];
+
+  let bultosNecesariosEstimados = 0;
+
+  for (const it of orden) {
+    const codigo = it.codigoProducto?.trim() || `PROD-${it.productoId}`;
+    const orientOk = mejorOrientacion(it.dimUnidadMm, di) ?? it.dimUnidadMm;
+    const capSolo = capacidadGrid(orientOk, di);
+
+    instrucciones.push({
+      productoId: it.productoId,
+      codigo,
+      orientacionMm: orientOk,
+      unidadesEnBulto1: 0,
+      capacidadTeoricaSiSolo: capSolo,
+    });
+
+    bultosNecesariosEstimados +=
+      capSolo > 0 ? Math.ceil(it.cantidadUnidades / capSolo) : 999999;
+  }
+
+  // Preview: SOLO primer producto del orden (estable)
+  const first = orden[0];
+  const codigoFirst =
+    first.codigoProducto?.trim() || `PROD-${first.productoId}`;
+  const orientFirst =
+    mejorOrientacion(first.dimUnidadMm, di) ?? first.dimUnidadMm;
+  const capSoloFirst = capacidadGrid(orientFirst, di);
+
+  const unidadesEnBulto1 =
+    capSoloFirst > 0 ? Math.min(first.cantidadUnidades, capSoloFirst) : 0;
+
+  if (instrucciones.length) {
+    instrucciones[0] = {
+      ...instrucciones[0],
+      unidadesEnBulto1,
+      capacidadTeoricaSiSolo: capSoloFirst,
+      orientacionMm: orientFirst,
+    };
+  }
+
+  const placements = buildGridPlacementsMm(
+    di,
+    orientFirst,
+    unidadesEnBulto1,
+    first.productoId,
+    codigoFirst
+  );
+
+  const volumenUsadoM3 = unidadesEnBulto1 * first.volumenUnidadM3;
+
+  return {
+    dimInternaMm: di,
+    unidadesTotales,
+    unidadesEnBulto1,
+    bultosNecesariosEstimados,
+    ocupacionVolumetricaPct:
+      capM3 > 0 ? Math.min(100, (volumenUsadoM3 / capM3) * 100) : 0,
+    instrucciones,
+    placementsBulto1: placements,
+  };
+}
+
+/* ============================
+   ✅ API: evaluaciones completas
+============================ */
+
+export function evaluarBultosEmpresa(
   items: MultiProductoUnidadInputReal[],
   bultos: IEmpresaBulto[],
-  topN = 3,
   packingPolicy: PackingPolicy = "OPERATIVO_AGRUPADO"
 ): EvaluacionBultoEmpresa[] {
   const itemsValidos = items.filter(
@@ -351,6 +481,7 @@ export function evaluarTopBultosEmpresa(
 
       if (cap <= 0) motivos.push("Capacidad interna inválida.");
 
+      // 1) descarte duro: no entra
       for (const it of itemsValidos) {
         const codigo = it.codigoProducto?.trim() || `PROD-${it.productoId}`;
         const m = motivoNoEntra(codigo, it.dimUnidadMm, di);
@@ -370,9 +501,14 @@ export function evaluarTopBultosEmpresa(
         };
       }
 
+      // 2) packing real según policy
       let packing3D: Packing3D | null = null;
 
-      if (packingPolicy === "BUSCAR_MEJOR_ACOMODO") {
+      if (packingPolicy === "OPERATIVO_AGRUPADO") {
+        // ✅ NO MEZCLA
+        packing3D = packingOperativoAgrupado(itemsValidos, di);
+      } else if (packingPolicy === "BUSCAR_MEJOR_ACOMODO") {
+        // ✅ mezcla con múltiples intentos
         const estrategias: ("AGRUPADO" | "VOLUMEN")[] = ["AGRUPADO", "VOLUMEN"];
         const INTENTOS = 24;
 
@@ -386,10 +522,8 @@ export function evaluarTopBultosEmpresa(
           }
         }
       } else {
-        const orden =
-          packingPolicy === "OPTIMIZAR_VOLUMEN"
-            ? ordenarItems(itemsValidos, "VOLUMEN")
-            : ordenarItems(itemsValidos, "AGRUPADO");
+        // OPTIMIZAR_VOLUMEN: ✅ mezcla permitida
+        const orden = ordenarItems(itemsValidos, "VOLUMEN");
         packing3D = packingPrimerBulto3D(orden, di);
       }
 
@@ -404,6 +538,52 @@ export function evaluarTopBultosEmpresa(
           packing3D: null,
           score: Number.MAX_SAFE_INTEGER,
         };
+      }
+
+      // ✅ viabilidad mínima: al menos 1 unidad en bulto1
+      if (packing3D.unidadesEnBulto1 <= 0) {
+        return {
+          bulto: b,
+          dimInternaMm: di,
+          capacidadInternaM3: cap,
+          viable: false,
+          motivosNoViable: [
+            "No entra ninguna unidad en el primer bulto (packing).",
+          ],
+          packing: null,
+          packing3D,
+          score: Number.MAX_SAFE_INTEGER,
+        };
+      }
+
+      // ⚠️ Importante:
+      // Esta regla ("que aparezcan todos los productos en el primer bulto") SOLO tiene sentido
+      // cuando la policy permite mezclar. En OPERATIVO, por definición, NO corresponde.
+      if (packingPolicy !== "OPERATIVO_AGRUPADO") {
+        const porProd = new Map<number, number>();
+        for (const pl of packing3D.placementsBulto1) {
+          porProd.set(pl.productoId, (porProd.get(pl.productoId) ?? 0) + 1);
+        }
+        const faltantes = itemsValidos
+          .filter((it) => (porProd.get(it.productoId) ?? 0) <= 0)
+          .map((it) => it.codigoProducto?.trim() || `PROD-${it.productoId}`);
+
+        if (faltantes.length) {
+          return {
+            bulto: b,
+            dimInternaMm: di,
+            capacidadInternaM3: cap,
+            viable: false,
+            motivosNoViable: [
+              `El packing no pudo ubicar unidades para: ${faltantes.join(
+                ", "
+              )}.`,
+            ],
+            packing: null,
+            packing3D,
+            score: Number.MAX_SAFE_INTEGER,
+          };
+        }
       }
 
       const score =
@@ -423,8 +603,20 @@ export function evaluarTopBultosEmpresa(
       };
     });
 
-  return evaluaciones
+  return evaluaciones.sort((a, b) => a.score - b.score);
+}
+
+/* ============================
+   ✅ API existente: topN viables
+============================ */
+
+export function evaluarTopBultosEmpresa(
+  items: MultiProductoUnidadInputReal[],
+  bultos: IEmpresaBulto[],
+  topN = 3,
+  packingPolicy: PackingPolicy = "OPERATIVO_AGRUPADO"
+): EvaluacionBultoEmpresa[] {
+  return evaluarBultosEmpresa(items, bultos, packingPolicy)
     .filter((e) => e.viable && e.packing3D)
-    .sort((a, b) => a.score - b.score)
     .slice(0, topN);
 }
