@@ -33,8 +33,20 @@ export async function evaluarPallet(params: {
   tipoContenedorId: number;
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
   objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
+  objetivoUnidades?: number;
+  objetivoOcupacion?: number;
+  modoSimulacion?: boolean;
 }) {
-  const { empresaId, loteId, tipoContenedorId, mixPolicy, objective } = params;
+  const {
+    empresaId,
+    loteId,
+    tipoContenedorId,
+    mixPolicy,
+    objective,
+    objetivoUnidades,
+    objetivoOcupacion,
+    modoSimulacion,
+  } = params;
 
   /* =========================
      1) Cargar contenedor + lote
@@ -204,6 +216,21 @@ export async function evaluarPallet(params: {
   /* =========================
      6) Calcular plan
   ========================= */
+  const parsedObjetivoUnidades =
+    objetivoUnidades != null && toNumber(objetivoUnidades) > 0
+      ? toNumber(objetivoUnidades)
+      : undefined;
+  const parsedObjetivoOcupacion =
+    objetivoOcupacion != null ? Number(objetivoOcupacion) : undefined;
+
+  if (
+    parsedObjetivoOcupacion != null &&
+    (parsedObjetivoOcupacion < 0 || parsedObjetivoOcupacion > 1)
+  ) {
+    throw new Error(
+      "El objetivo de ocupación debe ser un número entre 0 y 1 (por ejemplo, 0.85)."
+    );
+  }
 
   const plan = calcularPalletPlan({
     contenedor: {
@@ -225,6 +252,9 @@ export async function evaluarPallet(params: {
     mixPolicy,
     objective,
     items,
+    objetivoUnidades: parsedObjetivoUnidades,
+    objetivoOcupacion: parsedObjetivoOcupacion,
+    modoSimulacion,
   });
 
   console.log("EVALUAR_PALLET :: PLAN resumen", {
@@ -236,6 +266,9 @@ export async function evaluarPallet(params: {
     pesoTotalKg: plan.pallet1.pesoTotalKg,
     ocupacionBasePct: plan.pallet1.ocupacionBasePct,
     ocupacionVolumenPct: plan.pallet1.ocupacionVolumenPct,
+    ocupacionLogradaPct: plan.pallet1.ocupacionLogradaPct,
+    unidadesColocadas: plan.pallet1.unidadesColocadas,
+    volumenLibreMm3: plan.pallet1.volumenLibreMm3,
     warnings: plan.pallet1.warnings,
     placementsCount: plan.pallet1.placements?.length,
     palletDimMm: plan.pallet1.palletDimMm,

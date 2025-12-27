@@ -23,10 +23,13 @@ type PalletPlanResult = {
   palletsRequeridos: number;
   pallet1: {
     cajasTotales: number;
+    unidadesColocadas: number;
     cajasPorCapa: number;
     capas: number;
     ocupacionBasePct: number;
     ocupacionVolumenPct: number;
+    ocupacionLogradaPct: number;
+    volumenLibreMm3: number;
     pesoTotalKg: number;
     alturaTotalM: number;
     warnings: string[];
@@ -82,6 +85,9 @@ interface Props {
     tipoContenedorId: number;
     mixPolicy: MixPolicy;
     objective: Objective;
+    objetivoUnidades?: number;
+    objetivoOcupacion?: number;
+    modoSimulacion?: boolean;
   }) => Promise<{ plan: PalletPlanResult }>;
 
   // ✅ Guardar: persiste el plan ya calculado
@@ -89,6 +95,9 @@ interface Props {
     tipoContenedorId: number;
     mixPolicy: MixPolicy;
     objective: Objective;
+    objetivoUnidades?: number;
+    objetivoOcupacion?: number;
+    modoSimulacion?: boolean;
     plan: unknown; // lo serializás en server
   }) => Promise<{ palletPlanId: number }>;
 }
@@ -111,6 +120,10 @@ function formatDimMm(d: { largo: number; ancho: number; alto: number }) {
   return `${d.largo}×${d.ancho}×${d.alto} mm`;
 }
 
+function formatVolumenMm3ToM3(volumenMm3: number) {
+  return `${(volumenMm3 / 1_000_000_000).toFixed(3)} m³`;
+}
+
 /* =========================
    Component
 ========================= */
@@ -120,6 +133,9 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
   const [tipoContenedorId, setTipoContenedorId] = useState<number | "">("");
   const [mixPolicy, setMixPolicy] = useState<MixPolicy>("PERMITIR_MEZCLA");
   const [objective, setObjective] = useState<Objective>("OPERATIVO_ESTABLE");
+  const [modoSimulacion, setModoSimulacion] = useState<boolean>(false);
+  const [objetivoUnidades, setObjetivoUnidades] = useState<string>("");
+  const [objetivoOcupacion, setObjetivoOcupacion] = useState<string>("");
 
   const [result, setResult] = useState<PalletPlanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -158,6 +174,10 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
     });
   }, [lote.items]);
 
+  const simulacionActiva =
+    modoSimulacion &&
+    (objetivoUnidades.trim() !== "" || objetivoOcupacion.trim() !== "");
+
   /* =========================
      Validación común
   ========================= */
@@ -184,10 +204,38 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
       return null;
     }
 
+    const objetivoUnidadesNum = objetivoUnidades.trim()
+      ? Number(objetivoUnidades)
+      : undefined;
+    if (objetivoUnidadesNum !== undefined && !Number.isFinite(objetivoUnidadesNum)) {
+      setError("Indicá un número válido en unidades deseadas.");
+      return null;
+    }
+
+    const objetivoOcupacionPct = objetivoOcupacion.trim()
+      ? Number(objetivoOcupacion)
+      : undefined;
+    if (
+      objetivoOcupacionPct !== undefined &&
+      (!Number.isFinite(objetivoOcupacionPct) || objetivoOcupacionPct < 0 || objetivoOcupacionPct > 100)
+    ) {
+      setError("El % de ocupación deseada debe estar entre 0 y 100.");
+      return null;
+    }
+
     return {
       tipoContenedorId: Number(tipoContenedorId),
       mixPolicy,
       objective,
+      modoSimulacion,
+      objetivoUnidades:
+        modoSimulacion && objetivoUnidadesNum && objetivoUnidadesNum > 0
+          ? objetivoUnidadesNum
+          : undefined,
+      objetivoOcupacion:
+        modoSimulacion && objetivoOcupacionPct !== undefined
+          ? objetivoOcupacionPct / 100
+          : undefined,
     };
   };
 
@@ -349,6 +397,65 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
         </div>
       </div>
 
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">Modo simulación</label>
+          <div className="flex items-center gap-2">
+            <input
+              id="modo-simulacion"
+              type="checkbox"
+              className="h-4 w-4"
+              checked={modoSimulacion}
+              onChange={(e) => setModoSimulacion(e.target.checked)}
+            />
+            <label htmlFor="modo-simulacion" className="text-sm text-slate-700">
+              Limitar por objetivo sin perder el cálculo máximo por defecto.
+            </label>
+          </div>
+          <p className="text-xs text-slate-500">
+            Activá esta opción para simular un pallet parcial. Si la dejás apagada, el cálculo se mantiene como hasta ahora.
+          </p>
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">
+            Unidades deseadas (opcional)
+          </label>
+          <input
+            type="number"
+            min={0}
+            className="w-full border rounded-md px-3 py-2 text-sm"
+            placeholder="Ej: 40"
+            value={objetivoUnidades}
+            onChange={(e) => setObjetivoUnidades(e.target.value)}
+            disabled={!modoSimulacion}
+          />
+          <p className="text-xs text-slate-500">
+            Si completás este campo se detendrá la colocación cuando se alcance este número de bultos.
+          </p>
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">
+            % ocupación deseada (0-100)
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={1}
+            className="w-full border rounded-md px-3 py-2 text-sm"
+            placeholder="Ej: 80"
+            value={objetivoOcupacion}
+            onChange={(e) => setObjetivoOcupacion(e.target.value)}
+            disabled={!modoSimulacion}
+          />
+          <p className="text-xs text-slate-500">
+            El objetivo de ocupación se calcula sobre el volumen completo del pallet y es opcional.
+          </p>
+        </div>
+      </div>
+
       {/* Acciones */}
       <div className="flex flex-wrap items-center justify-end gap-2">
         <button
@@ -385,62 +492,150 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
       )}
 
       {/* Resultado */}
-      {result && (
-        <div className="space-y-4">
-          {/* KPIs */}
-          <div className="grid gap-3 md:grid-cols-4 text-sm">
-            <div className="rounded-md border p-3">
-              <p className="text-slate-500">Cajas en pallet #1</p>
-              <p className="font-semibold text-lg">{result.pallet1.cajasTotales}</p>
+      {result && (() => {
+        const capacidadTotal = Math.max(1, result.pallet1.cajasTotales);
+        const progresoUnidades = Math.min(
+          100,
+          (result.pallet1.unidadesColocadas / capacidadTotal) * 100
+        );
+        const ocupacionLibrePct = Math.max(
+          0,
+          100 - result.pallet1.ocupacionLogradaPct
+        );
+
+        return (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-xs text-slate-600">
+              <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-700 border">
+                {simulacionActiva
+                  ? "Simulación activada: usando objetivos opcionales"
+                  : "Modo estándar: calcula capacidad máxima"}
+              </span>
             </div>
 
-            <div className="rounded-md border p-3">
-              <p className="text-slate-500">Capas</p>
-              <p className="font-semibold text-lg">{result.pallet1.capas}</p>
+            {/* KPIs */}
+            <div className="grid gap-3 md:grid-cols-5 text-sm">
+              <div className="rounded-md border p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-slate-500">Unidades colocadas</p>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
+                    Simulación
+                  </span>
+                </div>
+                <p className="font-semibold text-lg">
+                  {result.pallet1.unidadesColocadas}
+                </p>
+                <p className="text-xs text-slate-500">
+                  Capacidad calculada: {result.pallet1.cajasTotales}
+                </p>
+                <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-500"
+                    style={{ width: `${progresoUnidades}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-md border p-3 space-y-2">
+                <p className="text-slate-500">Capas</p>
+                <p className="font-semibold text-lg">{result.pallet1.capas}</p>
+                <p className="text-xs text-slate-500">{result.pallet1.cajasPorCapa} cajas por capa (máx.)</p>
+              </div>
+
+              <div className="rounded-md border p-3 space-y-2">
+                <p className="text-slate-500">Ocupación volumen (altura usada)</p>
+                <p className="font-semibold text-lg">
+                  {result.pallet1.ocupacionVolumenPct.toFixed(1)}%
+                </p>
+                <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500"
+                    style={{ width: `${Math.min(100, result.pallet1.ocupacionVolumenPct)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-md border p-3 space-y-2">
+                <p className="text-slate-500">Ocupación objetivo</p>
+                <p className="font-semibold text-lg">
+                  {result.pallet1.ocupacionLogradaPct.toFixed(1)}%
+                </p>
+                <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div
+                    className="h-full bg-amber-500"
+                    style={{ width: `${Math.min(100, result.pallet1.ocupacionLogradaPct)}%` }}
+                  />
+                </div>
+                <p className="text-xs text-slate-500">
+                  Referencia: volumen completo del pallet.
+                </p>
+              </div>
+
+              <div className="rounded-md border p-3 space-y-2">
+                <p className="text-slate-500">Peso total</p>
+                <p className="font-semibold text-lg">{result.pallet1.pesoTotalKg.toFixed(1)} kg</p>
+                <p className="text-xs text-slate-500">
+                  Altura usada: {result.pallet1.alturaTotalM.toFixed(3)} m
+                </p>
+              </div>
             </div>
 
-            <div className="rounded-md border p-3">
-              <p className="text-slate-500">Ocupación volumen</p>
-              <p className="font-semibold text-lg">
-                {result.pallet1.ocupacionVolumenPct.toFixed(1)}%
+            <div className="grid gap-3 md:grid-cols-2 text-sm">
+              <div className="rounded-md border p-3 space-y-2">
+                <p className="text-slate-500">Volumen libre estimado</p>
+                <p className="font-semibold text-lg">
+                  {formatVolumenMm3ToM3(result.pallet1.volumenLibreMm3)}
+                </p>
+                <p className="text-xs text-slate-500">
+                  Aproximadamente {ocupacionLibrePct.toFixed(1)}% del pallet queda disponible.
+                </p>
+                <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div
+                    className="h-full bg-slate-400"
+                    style={{ width: `${Math.min(100, ocupacionLibrePct)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-md border p-3 space-y-2">
+                <p className="text-slate-500">Pallets requeridos (estimación)</p>
+                <p className="font-semibold text-lg">{result.palletsRequeridos}</p>
+                <p className="text-xs text-slate-500">
+                  Se mantiene la estimación base; la simulación no altera la propuesta máxima.
+                </p>
+              </div>
+            </div>
+
+            {/* Warnings */}
+            {result.pallet1.warnings?.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800 rounded-md">
+                <p className="font-semibold mb-1">Advertencias</p>
+                <ul className="list-disc pl-5 space-y-1">
+                  {result.pallet1.warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Viewer */}
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-slate-700">
+                Previsualización 3D — Pallet #1
+              </p>
+
+              <CubicacionPalletViewer3D
+                palletDimMm={result.pallet1.palletDimMm}
+                placements={result.pallet1.placements}
+              />
+
+              <p className="text-xs text-slate-500">
+                La visualización representa el layout calculado para el primer pallet.
               </p>
             </div>
-
-            <div className="rounded-md border p-3">
-              <p className="text-slate-500">Peso total</p>
-              <p className="font-semibold text-lg">{result.pallet1.pesoTotalKg.toFixed(1)} kg</p>
-            </div>
           </div>
-
-          {/* Warnings */}
-          {result.pallet1.warnings?.length > 0 && (
-            <div className="bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800 rounded-md">
-              <p className="font-semibold mb-1">Advertencias</p>
-              <ul className="list-disc pl-5 space-y-1">
-                {result.pallet1.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Viewer */}
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-slate-700">
-              Previsualización 3D — Pallet #1
-            </p>
-
-            <CubicacionPalletViewer3D
-              palletDimMm={result.pallet1.palletDimMm}
-              placements={result.pallet1.placements}
-            />
-
-            <p className="text-xs text-slate-500">
-              La visualización representa el layout calculado para el primer pallet.
-            </p>
-          </div>
-        </div>
-      )}
+        );
+      })()}
     </section>
   );
 }

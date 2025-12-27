@@ -37,6 +37,9 @@ export default async function PalletPage({
     tipoContenedorId: number;
     mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
     objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
+    objetivoUnidades?: number;
+    objetivoOcupacion?: number;
+    modoSimulacion?: boolean;
   }) {
     "use server";
     return previewPalletPlan({
@@ -45,6 +48,9 @@ export default async function PalletPage({
       tipoContenedorId: form.tipoContenedorId,
       mixPolicy: form.mixPolicy,
       objective: form.objective,
+      objetivoUnidades: form.objetivoUnidades,
+      objetivoOcupacion: form.objetivoOcupacion,
+      modoSimulacion: form.modoSimulacion,
     });
   }
 
@@ -53,6 +59,9 @@ export default async function PalletPage({
     tipoContenedorId: number;
     mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
     objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
+    objetivoUnidades?: number;
+    objetivoOcupacion?: number;
+    modoSimulacion?: boolean;
     plan: unknown; // viene del client; lo tipamos a JSON en el action
   }) {
     "use server";
@@ -62,6 +71,9 @@ export default async function PalletPage({
       tipoContenedorId: input.tipoContenedorId,
       mixPolicy: input.mixPolicy,
       objective: input.objective,
+      objetivoUnidades: input.objetivoUnidades,
+      objetivoOcupacion: input.objetivoOcupacion,
+      modoSimulacion: input.modoSimulacion,
     });
   }
 

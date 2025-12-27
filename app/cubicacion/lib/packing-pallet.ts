@@ -22,6 +22,10 @@ export type PalletInput = {
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
   objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
 
+  objetivoUnidades?: number;
+  objetivoOcupacion?: number; // 0-1
+  modoSimulacion?: boolean;
+
   items: Array<{
     tipoProductoId: number;
     codigo: string;
@@ -46,11 +50,14 @@ export type PalletPlanResult = {
 
   pallet1: {
     cajasTotales: number;
+    unidadesColocadas: number;
     cajasPorCapa: number;
     capas: number;
 
     ocupacionBasePct: number;
     ocupacionVolumenPct: number;
+    ocupacionLogradaPct: number;
+    volumenLibreMm3: number;
 
     pesoTotalKg: number;
     alturaTotalM: number;
@@ -151,6 +158,21 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     .filter((x) => x.cantidadBultos > 0)
     .map((x) => ({ ...x }));
 
+  const modoSimulacion = Boolean(input.modoSimulacion);
+  const objetivoUnidades =
+    modoSimulacion && input.objetivoUnidades != null
+      ? Math.max(0, Math.floor(Number(input.objetivoUnidades)))
+      : null;
+  const objetivoOcupacion =
+    modoSimulacion && input.objetivoOcupacion != null
+      ? Math.min(1, Math.max(0, Number(input.objetivoOcupacion)))
+      : null;
+
+  const volumenObjetivoMm3 =
+    objetivoOcupacion != null
+      ? objetivoOcupacion * palletDimMm.largo * palletDimMm.ancho * maxAlturaMm
+      : null;
+
   const sortKey = (it: (typeof pendientes)[number]) => {
     if (input.objective === "OPTIMIZAR_VOLUMEN")
       return -volumenMm3(it.dimBultoMm);
@@ -173,6 +195,8 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
   let pesoActualKg = Number(input.contenedor.peso_pallet_kg || 0);
   const pesoMaxKg = Number(input.contenedor.peso_max_kg || 0);
 
+  let volumenColocadoMm3 = 0;
+
   // Armado pallet1 por capas
   let alturaUsadaMm = 0;
   let capas = 0;
@@ -183,6 +207,9 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
   const porProducto = new Map<number, { bultos: number; porCapa: number }>();
 
   while (pendientes.some((p) => p.cantidadBultos > 0)) {
+    if (objetivoUnidades != null && cajasTotales >= objetivoUnidades) break;
+    if (volumenObjetivoMm3 != null && volumenColocadoMm3 >= volumenObjetivoMm3)
+      break;
     // elegimos el “producto base” para la capa
     const base = pendientes.find((p) => p.cantidadBultos > 0);
     if (!base) break;
@@ -221,15 +248,41 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
         pesoMaxKg > 0
           ? Math.floor((pesoMaxKg - pesoActualKg) / base.pesoBultoKg)
           : 999999;
+      const maxPorObjetivoUnidades =
+        objetivoUnidades != null
+          ? Math.max(0, objetivoUnidades - cajasTotales)
+          : Number.POSITIVE_INFINITY;
+      const maxPorObjetivoVolumen =
+        volumenObjetivoMm3 != null
+          ? Math.max(
+              0,
+              Math.floor(
+                (volumenObjetivoMm3 - volumenColocadoMm3) /
+                  volumenMm3(base.dimBultoMm)
+              )
+            )
+          : Number.POSITIVE_INFINITY;
       const take = Math.max(
         0,
-        Math.min(base.cantidadBultos, capBase.cap, maxPorPeso)
+        Math.min(
+          base.cantidadBultos,
+          capBase.cap,
+          maxPorPeso,
+          maxPorObjetivoUnidades,
+          maxPorObjetivoVolumen
+        )
       );
 
       if (take <= 0) {
-        warnings.push(
-          "Se alcanzó el peso máximo del pallet. Quedan bultos para otro pallet."
-        );
+        if (objetivoUnidades != null || volumenObjetivoMm3 != null) {
+          warnings.push(
+            "Se alcanzó el objetivo configurado para la simulación del pallet."
+          );
+        } else {
+          warnings.push(
+            "Se alcanzó el peso máximo del pallet. Quedan bultos para otro pallet."
+          );
+        }
         break;
       }
 
@@ -254,6 +307,7 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
       base.cantidadBultos -= take;
       cajasEnEstaCapa += take;
       pesoActualKg += take * base.pesoBultoKg;
+      volumenColocadoMm3 += take * volumenMm3(base.dimBultoMm);
 
       const acc = porProducto.get(base.tipoProductoId) ?? {
         bultos: 0,
@@ -268,6 +322,17 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
       const maxSlots = capBase.cap;
 
       for (let slot = 0; slot < maxSlots; slot++) {
+        const unidadesRestantes =
+          objetivoUnidades != null
+            ? objetivoUnidades - cajasTotales - cajasEnEstaCapa
+            : Number.POSITIVE_INFINITY;
+        const volumenRestante =
+          volumenObjetivoMm3 != null
+            ? volumenObjetivoMm3 - volumenColocadoMm3
+            : Number.POSITIVE_INFINITY;
+
+        if (unidadesRestantes <= 0 || volumenRestante <= 0) break;
+
         // elegimos el siguiente item que:
         // - tenga stock
         // - no rompa altura (alto <= altoCapa para mantener capa plana)
@@ -277,6 +342,7 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
           if (p.dimBultoMm.alto > altoCapa) return false;
           if (pesoMaxKg > 0 && pesoActualKg + p.pesoBultoKg > pesoMaxKg)
             return false;
+          if (volumenRestante < volumenMm3(p.dimBultoMm)) return false;
           // adicional: para evitar daño, en cuidado_producto priorizamos pesados al inicio ya por sorting
           return true;
         });
@@ -308,6 +374,7 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
         next.cantidadBultos -= 1;
         cajasEnEstaCapa += 1;
         pesoActualKg += next.pesoBultoKg;
+        volumenColocadoMm3 += volumenMm3(next.dimBultoMm);
 
         const acc = porProducto.get(next.tipoProductoId) ?? {
           bultos: 0,
@@ -348,6 +415,14 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
   const ocupacionVolumenPct =
     volPalletMm3 > 0 ? (volCajasMm3 / volPalletMm3) * 100 : 0;
 
+  const volumenMaxReferenciaMm3 =
+    palletDimMm.largo * palletDimMm.ancho * Math.max(1, maxAlturaMm);
+  const volumenLibreMm3 = Math.max(0, volumenMaxReferenciaMm3 - volCajasMm3);
+  const ocupacionLogradaPct =
+    volumenMaxReferenciaMm3 > 0
+      ? (volCajasMm3 / volumenMaxReferenciaMm3) * 100
+      : 0;
+
   const alturaTotalM = alturaUsadaMm / 1000;
 
   const itemsOut = Array.from(porProducto.entries()).map(
@@ -362,10 +437,13 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     palletsRequeridos,
     pallet1: {
       cajasTotales,
+      unidadesColocadas: cajasTotales,
       cajasPorCapa: cajasPorCapaRef,
       capas,
       ocupacionBasePct,
       ocupacionVolumenPct,
+      ocupacionLogradaPct,
+      volumenLibreMm3,
       pesoTotalKg: pesoActualKg,
       alturaTotalM,
       items: itemsOut,
