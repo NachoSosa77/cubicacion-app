@@ -28,7 +28,6 @@ type ItemState = {
   largoUnidadMm: string;
   anchoUnidadMm: string;
   altoUnidadMm: string;
-  grosorParedMm: string;
 };
 
 interface Props {
@@ -186,7 +185,6 @@ export function MultiProductoConfigurator({
       largoUnidadMm: "",
       anchoUnidadMm: "",
       altoUnidadMm: "",
-      grosorParedMm: "",
     },
   ]);
 
@@ -315,7 +313,8 @@ export function MultiProductoConfigurator({
     [bultosEmpresa]
   );
 
-  const mostrarPolicy = itemsMultiReal.length > 0 && hayBultosEmpresaHabilitados;
+  const mostrarPolicy =
+    itemsMultiReal.length > 0 && hayBultosEmpresaHabilitados;
 
   /* ============================
      ✅ Evaluaciones (dependen de policy)
@@ -325,7 +324,12 @@ export function MultiProductoConfigurator({
     if (!itemsMultiReal.length) return [];
     if (!hayBultosEmpresaHabilitados) return [];
     return evaluarBultosEmpresa(itemsMultiReal, bultosEmpresa, packingPolicy);
-  }, [itemsMultiReal, bultosEmpresa, packingPolicy, hayBultosEmpresaHabilitados]);
+  }, [
+    itemsMultiReal,
+    bultosEmpresa,
+    packingPolicy,
+    hayBultosEmpresaHabilitados,
+  ]);
 
   const topBultosEmpresa = useMemo(() => {
     return evaluacionesAll.filter((e) => e.viable && e.packing3D).slice(0, 3);
@@ -380,16 +384,10 @@ export function MultiProductoConfigurator({
         const bH = numPos((producto as any).alto_por_bulto);
 
         if (bL && bA && bH) {
-          const row = items.find((x) => x.key === it.itemKey);
-          const grosor = Math.max(
-            numberOrNull(row?.grosorParedMm ?? "") ?? 0,
-            0
-          );
-
           const res = calcularUnidadEnBulto({
             producto,
             dimUnidadMm: it.dimUnidadMm,
-            grosorParedMm: grosor,
+            grosorParedMm: 0,
             dimExternaBultoMm: { largo: bL, ancho: bA, alto: bH },
           });
 
@@ -437,7 +435,9 @@ export function MultiProductoConfigurator({
             );
 
             if (placements.length === 0) {
-              placements = [buildSinglePlacementOnFloor(dimInterna, it.dimUnidadMm)];
+              placements = [
+                buildSinglePlacementOnFloor(dimInterna, it.dimUnidadMm),
+              ];
             }
 
             const data3d: CubicacionBulto3DInput = {
@@ -778,7 +778,6 @@ export function MultiProductoConfigurator({
                 <th className="px-3 py-2">Largo (mm)</th>
                 <th className="px-3 py-2">Ancho (mm)</th>
                 <th className="px-3 py-2">Alto (mm)</th>
-                <th className="px-3 py-2">Grosor pared (mm)</th>
                 <th className="px-3 py-2 text-right">Acciones</th>
               </tr>
             </thead>
@@ -832,7 +831,11 @@ export function MultiProductoConfigurator({
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.largoUnidadMm}
                       onChange={(e) =>
-                        actualizarItem(item.key, "largoUnidadMm", e.target.value)
+                        actualizarItem(
+                          item.key,
+                          "largoUnidadMm",
+                          e.target.value
+                        )
                       }
                       placeholder="L"
                     />
@@ -846,7 +849,11 @@ export function MultiProductoConfigurator({
                       className="w-28 border rounded-md px-2 py-1"
                       value={item.anchoUnidadMm}
                       onChange={(e) =>
-                        actualizarItem(item.key, "anchoUnidadMm", e.target.value)
+                        actualizarItem(
+                          item.key,
+                          "anchoUnidadMm",
+                          e.target.value
+                        )
                       }
                       placeholder="A"
                     />
@@ -865,26 +872,6 @@ export function MultiProductoConfigurator({
                       placeholder="H"
                     />
                   </td>
-
-                  <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      min={0}
-                      step="any"
-                      className="w-28 border rounded-md px-2 py-1"
-                      value={item.grosorParedMm}
-                      onChange={(e) =>
-                        actualizarItem(
-                          item.key,
-                          "grosorParedMm",
-                          e.target.value
-                        )
-                      }
-                      placeholder="0"
-                    />
-                    <p className="text-[11px] text-slate-500 mt-1">Opcional.</p>
-                  </td>
-
                   <td className="px-3 py-2 text-right">
                     {items.length > 1 && (
                       <button
@@ -1157,7 +1144,9 @@ export function MultiProductoConfigurator({
                 <p className="font-semibold text-slate-700">
                   Bulto estándar del producto (pack cerrado)
                 </p>
-                <p>Este bulto corresponde a un pack definido por el producto.</p>
+                <p>
+                  Este bulto corresponde a un pack definido por el producto.
+                </p>
                 <p>
                   El espacio visible en la visualización no representa capacidad
                   disponible.
