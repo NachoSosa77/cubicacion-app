@@ -197,6 +197,8 @@ export function MultiProductoConfigurator({
     null
   );
 
+  const [modoSimulacion, setModoSimulacion] = useState(false);
+
   const [packStdPolicy, setPackStdPolicy] = useState<PackStdPolicy>(
     "LIMITADO_POR_PRODUCTO"
   );
@@ -710,6 +712,13 @@ export function MultiProductoConfigurator({
       return;
     }
 
+    if (modoSimulacion) {
+      setMensaje(
+        "Simulación realizada. Revisá la previsualización 3D; no se guardó ningún lote."
+      );
+      return;
+    }
+
     startTransition(async () => {
       try {
         const payload: MultiProductoConfiguracionInput = {
@@ -766,6 +775,23 @@ export function MultiProductoConfigurator({
           />
         </div>
       </header>
+
+      {/* Simulación */}
+      <div className="flex flex-col gap-1 rounded-md border border-dashed border-indigo-200 bg-indigo-50 p-3">
+        <label className="inline-flex items-center gap-2 text-sm font-medium text-indigo-900">
+          <input
+            type="checkbox"
+            checked={modoSimulacion}
+            onChange={(e) => setModoSimulacion(e.target.checked)}
+          />
+          Activar modo simulación (producto → bulto)
+        </label>
+        <p className="text-xs text-indigo-800">
+          Usá este modo para ensayar combinaciones de productos dentro del bulto
+          sin guardar un lote. Podés previsualizar en 3D y compartir la opción
+          seleccionada sin persistirla.
+        </p>
+      </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Tabla */}
@@ -1200,7 +1226,11 @@ export function MultiProductoConfigurator({
             disabled={isPending || !hasPreview}
             className="px-4 py-2 bg-indigo-600 text-white rounded-md disabled:opacity-50"
           >
-            {isPending ? "Guardando..." : "Guardar cubicación"}
+            {isPending
+              ? "Guardando..."
+              : modoSimulacion
+              ? "Simular (no guarda)"
+              : "Guardar cubicación"}
           </button>
         </div>
 

@@ -107,6 +107,8 @@ export function CamionClient({
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [selected, setSelected] = useState<VarianteKey>("A");
   const [error, setError] = useState<string | null>(null);
+  const [mensaje, setMensaje] = useState<string | null>(null);
+  const [modoSimulacion, setModoSimulacion] = useState(false);
 
   const [isPending, startTransition] = useTransition();
   const [isSaving, startSave] = useTransition();
@@ -125,6 +127,7 @@ export function CamionClient({
 
   const handlePreview = () => {
     setError(null);
+    setMensaje(null);
     setPreview(null);
 
     if (!hasPallets) {
@@ -150,6 +153,16 @@ export function CamionClient({
 
   const handleGuardar = () => {
     if (!activePlan || !transporteId) return;
+
+    setError(null);
+    setMensaje(null);
+
+    if (modoSimulacion) {
+      setMensaje(
+        "Simulación realizada. La estrategia elegida no se guardó en la base."
+      );
+      return;
+    }
 
     startSave(async () => {
       try {
@@ -181,6 +194,22 @@ export function CamionClient({
           Compará distintas estrategias y elegí la mejor opción.
         </p>
       </header>
+
+      <div className="flex flex-col gap-1 rounded-md border border-dashed border-indigo-200 bg-indigo-50 p-3 text-sm">
+        <label className="inline-flex items-center gap-2 font-medium text-indigo-900">
+          <input
+            type="checkbox"
+            checked={modoSimulacion}
+            onChange={(e) => setModoSimulacion(e.target.checked)}
+          />
+          Activar modo simulación (pallet → camión)
+        </label>
+        <p className="text-xs text-indigo-800">
+          Probá distintas estrategias sin generar un plan definitivo. El modo
+          simulación te deja previsualizar y comunicar la opción elegida sin
+          guardarla.
+        </p>
+      </div>
 
       {/* Lote */}
       <div className="rounded-md border bg-slate-50 p-4 text-sm space-y-3">
@@ -289,7 +318,11 @@ export function CamionClient({
               disabled={isSaving}
               className="px-4 py-2 bg-emerald-600 text-white rounded-md disabled:opacity-50"
             >
-              {isSaving ? "Guardando..." : "Guardar opción"}
+              {isSaving
+                ? "Guardando..."
+                : modoSimulacion
+                ? "Simular (no guarda)"
+                : "Guardar opción"}
             </button>
           )}
         </div>
@@ -298,6 +331,12 @@ export function CamionClient({
       {error && (
         <div className="bg-red-50 border border-red-200 p-3 text-sm text-red-700 rounded-md">
           {error}
+        </div>
+      )}
+
+      {mensaje && (
+        <div className="bg-emerald-50 border border-emerald-200 p-3 text-sm text-emerald-800 rounded-md">
+          {mensaje}
         </div>
       )}
 
