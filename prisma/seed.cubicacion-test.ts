@@ -66,7 +66,7 @@ async function main() {
       // Campos "de negocio" (pueden ajustarse si querés)
       unidades_por_unidad_entrega: 12, // 12 unidades por caja
       peso_por_unidad_venta: 250, // 250g por unidad (valor arbitrario)
-      peso_por_uniad_entrega: 3000, // 3kg por caja
+      peso_por_unidad_entrega: 3000, // 3kg por caja
       volumen_por_unidad_entrega: 1680000, // 120*100*140 mm³ aprox
       unidad_entra_por_bulto: 12,
 

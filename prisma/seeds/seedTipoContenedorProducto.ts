@@ -34,7 +34,7 @@ export async function seedTipoContenedorProducto(prisma: PrismaClient) {
   const prodCodes = [
     "CM0916BM",
     "GALLETAS-TEST-CAJA12",
-    "CAFÉ-TEST-CAJA6",
+    "CAFE-TEST-CAJA6",
     "ARROZ-TEST-BOLSA10",
   ];
 

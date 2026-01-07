@@ -2,6 +2,7 @@
 
 import type { IEmpresaBulto } from "../actions/empresaBultoActions";
 import { type ResultadoCubicacionMultiProducto } from "./cubicacion-multiproducto";
+import { SimulacionBultoModo } from "./packing/bulto";
 
 /* ============================
    Packing policy
@@ -26,6 +27,10 @@ export type MultiProductoUnidadInputReal = {
   cantidadUnidades: number;
   volumenUnidadM3: number;
   dimUnidadMm: DimMm;
+  pesoUnidadKg?: number | null;
+  apilable?: boolean;
+  maxCargaSuperiorKg?: number | null;
+  factorSeguridadCompresion?: number | null;
 };
 
 /* ============================
@@ -150,13 +155,43 @@ function motivoNoEntra(codigo: string, dim: DimMm, di: DimMm): string {
 }
 
 /* ============================
+   ✅ Utils de peso (tara + max)
+============================ */
+
+function pesoUnitKgSafe(v: unknown): number | null {
+  const n = typeof v === "number" ? v : null;
+  if (n === null) return null;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function bultoMaxContenidoKg(b: IEmpresaBulto): number | null {
+  const maxPesoKg =
+    typeof b.max_peso_kg === "number" && Number.isFinite(b.max_peso_kg)
+      ? b.max_peso_kg
+      : null;
+
+  if (maxPesoKg === null || maxPesoKg <= 0) return null;
+
+  const taraKg =
+    typeof b.tara_kg === "number" &&
+    Number.isFinite(b.tara_kg) &&
+    b.tara_kg >= 0
+      ? b.tara_kg
+      : 0;
+
+  return Math.max(0, maxPesoKg - taraKg);
+}
+
+/* ============================
    Packing geométrico (mezcla permitida)
    - Usado para OPTIMIZAR_VOLUMEN y BUSCAR_MEJOR_ACOMODO
 ============================ */
 
 function packingPrimerBulto3D(
   items: MultiProductoUnidadInputReal[],
-  di: DimMm
+  di: DimMm,
+  modo: SimulacionBultoModo
 ): Packing3D {
   const unidadesTotales = items.reduce((a, b) => a + b.cantidadUnidades, 0);
   const capM3 = volumenM3(di);
@@ -286,13 +321,34 @@ function packingPrimerBulto3D(
     ocupacionPct: capM3 > 0 ? Math.min(100, (volumenUsadoM3 / capM3) * 100) : 0,
   });
 
+  // ✅ Aplicar modo (MAX vs PCT) recortando el preview del bulto 1
+  const unidadesEnBulto1Original = unidadesEnBulto1;
+  const unidadesEnBulto1Final = aplicarModoAUnidades(
+    unidadesEnBulto1Original,
+    unidadesTotales,
+    modo
+  );
+
+  if (unidadesEnBulto1Final < unidadesEnBulto1Original) {
+    // recortamos placements proporcionalmente (preview)
+    placements.splice(unidadesEnBulto1Final);
+    unidadesEnBulto1 = unidadesEnBulto1Final;
+  }
+
+  const bultosNecesariosEstimadosFinal =
+    unidadesEnBulto1 > 0
+      ? Math.ceil(unidadesTotales / unidadesEnBulto1)
+      : 999999;
+
+  const ocupacionFinalPct =
+    capM3 > 0 ? Math.min(100, (volumenUsadoM3 / capM3) * 100) : 0;
+
   return {
     dimInternaMm: di,
     unidadesTotales,
     unidadesEnBulto1,
-    bultosNecesariosEstimados,
-    ocupacionVolumetricaPct:
-      capM3 > 0 ? Math.min(100, (volumenUsadoM3 / capM3) * 100) : 0,
+    bultosNecesariosEstimados: bultosNecesariosEstimadosFinal,
+    ocupacionVolumetricaPct: ocupacionFinalPct,
     instrucciones,
     placementsBulto1: placements,
   };
@@ -380,9 +436,28 @@ function buildGridPlacementsMm(
   return out;
 }
 
+function aplicarModoAUnidades(
+  unidadesEnBulto1: number,
+  unidadesTotales: number,
+  modo: SimulacionBultoModo
+): number {
+  const base = Math.max(0, Math.floor(unidadesEnBulto1));
+
+  if (modo.kind === "MAX") return base;
+
+  const pct = Number((modo as any).pct);
+  if (!Number.isFinite(pct) || pct <= 0) return base;
+  const pctClamped = Math.min(100, Math.max(1, pct));
+
+  // objetivo sobre el bulto1 "base" (no sobre totales)
+  const objetivo = Math.floor((base * pctClamped) / 100);
+  return Math.max(1, Math.min(base, objetivo));
+}
+
 function packingOperativoAgrupado(
   items: MultiProductoUnidadInputReal[],
-  di: DimMm
+  di: DimMm,
+  modo: SimulacionBultoModo
 ): Packing3D {
   const orden = ordenarItems(items, "AGRUPADO");
 
@@ -418,8 +493,14 @@ function packingOperativoAgrupado(
     mejorOrientacion(first.dimUnidadMm, di) ?? first.dimUnidadMm;
   const capSoloFirst = capacidadGrid(orientFirst, di);
 
-  const unidadesEnBulto1 =
+  const unidadesEnBulto1Base =
     capSoloFirst > 0 ? Math.min(first.cantidadUnidades, capSoloFirst) : 0;
+
+  const unidadesEnBulto1 = aplicarModoAUnidades(
+    unidadesEnBulto1Base,
+    unidadesTotales,
+    modo
+  );
 
   if (instrucciones.length) {
     instrucciones[0] = {
@@ -459,7 +540,8 @@ function packingOperativoAgrupado(
 export function evaluarBultosEmpresa(
   items: MultiProductoUnidadInputReal[],
   bultos: IEmpresaBulto[],
-  packingPolicy: PackingPolicy = "OPERATIVO_AGRUPADO"
+  packingPolicy: PackingPolicy = "OPERATIVO_AGRUPADO",
+  modo: SimulacionBultoModo = { kind: "MAX" }
 ): EvaluacionBultoEmpresa[] {
   const itemsValidos = items.filter(
     (i) =>
@@ -506,7 +588,7 @@ export function evaluarBultosEmpresa(
 
       if (packingPolicy === "OPERATIVO_AGRUPADO") {
         // ✅ NO MEZCLA
-        packing3D = packingOperativoAgrupado(itemsValidos, di);
+        packing3D = packingOperativoAgrupado(itemsValidos, di, modo);
       } else if (packingPolicy === "BUSCAR_MEJOR_ACOMODO") {
         // ✅ mezcla con múltiples intentos
         const estrategias: ("AGRUPADO" | "VOLUMEN")[] = ["AGRUPADO", "VOLUMEN"];
@@ -515,7 +597,7 @@ export function evaluarBultosEmpresa(
         for (const est of estrategias) {
           for (let i = 0; i < INTENTOS; i++) {
             const orden = shuffle(ordenarItems(itemsValidos, est));
-            const p = packingPrimerBulto3D(orden, di);
+            const p = packingPrimerBulto3D(orden, di, modo);
             if (!packing3D || esMejor(p, packing3D)) {
               packing3D = p;
             }
@@ -524,7 +606,7 @@ export function evaluarBultosEmpresa(
       } else {
         // OPTIMIZAR_VOLUMEN: ✅ mezcla permitida
         const orden = ordenarItems(itemsValidos, "VOLUMEN");
-        packing3D = packingPrimerBulto3D(orden, di);
+        packing3D = packingPrimerBulto3D(orden, di, modo);
       }
 
       if (!packing3D) {
@@ -578,6 +660,74 @@ export function evaluarBultosEmpresa(
               `El packing no pudo ubicar unidades para: ${faltantes.join(
                 ", "
               )}.`,
+            ],
+            packing: null,
+            packing3D,
+            score: Number.MAX_SAFE_INTEGER,
+          };
+        }
+      }
+
+      /* ============================
+         ✅ Restricción dura por peso del bulto
+         - si max_peso_kg está definido, validamos que el contenido del BULTO 1
+           no supere (max_peso_kg - tara_kg)
+      ============================ */
+
+      const maxContenidoKg = bultoMaxContenidoKg(b);
+
+      if (maxContenidoKg !== null) {
+        // Mapa rápido productoId -> pesoUnidadKg
+        const pesoPorProducto = new Map<number, number>();
+        for (const it of itemsValidos) {
+          const pu = pesoUnitKgSafe(it.pesoUnidadKg);
+          if (pu !== null) pesoPorProducto.set(it.productoId, pu);
+        }
+
+        // Si hay placements pero falta peso en alguno, no podemos validar con certeza => no viable (pro)
+        const faltanPesos = packing3D.placementsBulto1.some(
+          (pl) => !pesoPorProducto.has(pl.productoId)
+        );
+
+        if (faltanPesos) {
+          return {
+            bulto: b,
+            dimInternaMm: di,
+            capacidadInternaM3: cap,
+            viable: false,
+            motivosNoViable: [
+              "No se pudo validar peso del bulto: falta pesoUnidadKg en uno o más productos (requerido cuando el bulto tiene max_peso_kg).",
+            ],
+            packing: null,
+            packing3D,
+            score: Number.MAX_SAFE_INTEGER,
+          };
+        }
+
+        const pesoContenidoBulto1 = packing3D.placementsBulto1.reduce(
+          (acc, pl) => acc + (pesoPorProducto.get(pl.productoId) ?? 0),
+          0
+        );
+
+        if (pesoContenidoBulto1 > maxContenidoKg + 1e-9) {
+          const taraKg =
+            typeof b.tara_kg === "number" &&
+            Number.isFinite(b.tara_kg) &&
+            b.tara_kg >= 0
+              ? b.tara_kg
+              : 0;
+
+          return {
+            bulto: b,
+            dimInternaMm: di,
+            capacidadInternaM3: cap,
+            viable: false,
+            motivosNoViable: [
+              `Excede peso máximo del bulto. Contenido(bulto1)=${pesoContenidoBulto1.toFixed(
+                3
+              )}kg > permitido=${maxContenidoKg.toFixed(3)}kg (max=${Number(
+                b.max_peso_kg
+              ).toFixed(3)}kg, tara=${taraKg.toFixed(3)}kg).`,
             ],
             packing: null,
             packing3D,

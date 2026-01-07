@@ -31,11 +31,17 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
     habilitado: true,
     unidad_entra_por_bulto: 1,
 
-    // opcionales pero “pro” dejar nulos si no están definidos:
+    // pesos/volúmenes opcionales
     peso_por_unidad_venta: null,
-    peso_por_uniad_entrega: null,
+    peso_por_unidad_entrega: null, // ✅ corregido
     volumen_por_unidad_entrega: null,
     volumen_por_bulto: null,
+
+    // ✅ A2 (defaults “profesionales”)
+    apilable: true,
+    // Si no está definido, podrías dejar NULL; para demo lo seteamos conservador.
+    max_carga_superior_por_unidad_kg: "10.000",
+    factor_seguridad_compresion: "0.850",
   } as const;
 
   // 1) CM0916BM
@@ -46,8 +52,14 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
       alto_por_bulto: 870,
       ancho_por_bulto: 765,
       largo_por_bulto: 840,
-      peso_por_bulto: "6.8645", // Decimal as string (Prisma Decimal)
+      peso_por_bulto: "6.8645",
       volumen_por_bulto: null,
+
+      // A2
+      apilable: true,
+      max_carga_superior_por_unidad_kg: "12.000",
+      factor_seguridad_compresion: "0.850",
+
       updated_at: new Date(),
       updated_by: "seed",
     },
@@ -60,6 +72,9 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
       ancho_por_bulto: 765,
       largo_por_bulto: 840,
       peso_por_bulto: "6.8645",
+
+      // A2 (override)
+      max_carga_superior_por_unidad_kg: "12.000",
     },
   });
 
@@ -72,6 +87,12 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
       ancho_por_bulto: 300,
       alto_por_bulto: 300,
       peso_por_bulto: "3.6",
+
+      // A2
+      apilable: true,
+      max_carga_superior_por_unidad_kg: "15.000",
+      factor_seguridad_compresion: "0.850",
+
       updated_at: new Date(),
       updated_by: "seed",
     },
@@ -84,31 +105,42 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
       ancho_por_bulto: 300,
       alto_por_bulto: 300,
       peso_por_bulto: "3.6",
+
+      // A2 (override)
+      max_carga_superior_por_unidad_kg: "15.000",
     },
   });
 
-  // 3) CAFÉ-TEST-CAJA6
-  // Nota: si tu DB/colación se pone quisquillosa con tildes en códigos, lo ideal es normalizar a ASCII.
+  // 3) CAFE-TEST-CAJA6 (recomiendo ASCII en códigos)
   await prisma.tipoProducto.upsert({
-    where: { codigo: "CAFÉ-TEST-CAJA6" },
+    where: { codigo: "CAFE-TEST-CAJA6" },
     update: {
       unidades_por_unidad_entrega: 6,
       largo_por_bulto: 300,
       ancho_por_bulto: 250,
       alto_por_bulto: 260,
       peso_por_bulto: "4.2",
+
+      // A2 (más frágil)
+      apilable: true,
+      max_carga_superior_por_unidad_kg: "6.000",
+      factor_seguridad_compresion: "0.850",
+
       updated_at: new Date(),
       updated_by: "seed",
     },
     create: {
       ...baseCreate,
-      codigo: "CAFÉ-TEST-CAJA6",
+      codigo: "CAFE-TEST-CAJA6",
       descripcion: "Caja de café test x6 frascos",
       unidades_por_unidad_entrega: 6,
       largo_por_bulto: 300,
       ancho_por_bulto: 250,
       alto_por_bulto: 260,
       peso_por_bulto: "4.2",
+
+      // A2
+      max_carga_superior_por_unidad_kg: "6.000",
     },
   });
 
@@ -121,6 +153,12 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
       ancho_por_bulto: 400,
       alto_por_bulto: 180,
       peso_por_bulto: "10",
+
+      // A2 (robusto)
+      apilable: true,
+      max_carga_superior_por_unidad_kg: "40.000",
+      factor_seguridad_compresion: "0.850",
+
       updated_at: new Date(),
       updated_by: "seed",
     },
@@ -133,6 +171,9 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
       ancho_por_bulto: 400,
       alto_por_bulto: 180,
       peso_por_bulto: "10",
+
+      // A2
+      max_carga_superior_por_unidad_kg: "40.000",
     },
   });
 

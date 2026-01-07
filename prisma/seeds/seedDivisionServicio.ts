@@ -927,6 +927,7 @@ export async function seedDivisionServicio(prisma: PrismaClient) {
 
   // Opcional en dev: vaciar para poder re-seedear sin conflictos
   await prisma.transporteClasificacion.deleteMany();
+  await prisma.tipoProducto.deleteMany();
   await prisma.transporteClase.deleteMany();
   await prisma.tipoUnidadMedidaVenta.deleteMany();
   await prisma.tipoUnidadMedidaEntrega.deleteMany();

@@ -14,17 +14,7 @@ import type { CubicacionBulto3DInput } from "../types/cubicacion-3d";
 
 interface Props {
   data: CubicacionBulto3DInput;
-
-  /**
-   * 0.9–1: “aire visual” multiplicativo (escala).
-   * Se combina con visualGapMm para mejorar lectura sin tocar packing.
-   */
   gapFactor?: number;
-
-  /**
-   * Gap visual fijo en mm (no físico). Default: 1.5 mm.
-   * Reduce el “bloque compacto” y evita confusión por edges.
-   */
   visualGapMm?: number;
 }
 
@@ -46,7 +36,6 @@ function colorForProducto(productoId: number) {
 }
 
 function roundKey(v: number) {
-  // para agrupar capas por Y con tolerancia
   return Math.round(v * 1000) / 1000;
 }
 
@@ -61,7 +50,6 @@ export function CubicacionBultoViewer3D({
 }: Props) {
   const { bulto, contenido } = data;
 
-  // mm → metros (interno)
   const bultoSizeM = useMemo(() => {
     return {
       x: bulto.dimInternaMm.largo / 1000,
@@ -72,12 +60,8 @@ export function CubicacionBultoViewer3D({
 
   const hasPositions = contenido.some((c) => !!c.positionMm);
 
-  // ========
-  // Modo Viewer
-  // ========
   const [mode, setMode] = useState<ViewerMode>("OPERATIVO");
 
-  // Leyenda por producto (codigo + cantidad de unidades dibujadas)
   const legend = useMemo(() => {
     const map = new Map<number, { codigo: string; count: number; color: string }>();
 
@@ -87,11 +71,8 @@ export function CubicacionBultoViewer3D({
       const codigo = String(it.codigo ?? `PROD-${pid}`).trim() || `PROD-${pid}`;
 
       const prev = map.get(pid);
-      if (!prev) {
-        map.set(pid, { codigo, count: reps, color: colorForProducto(pid) });
-      } else {
-        prev.count += reps;
-      }
+      if (!prev) map.set(pid, { codigo, count: reps, color: colorForProducto(pid) });
+      else prev.count += reps;
     }
 
     return Array.from(map.entries())
@@ -99,73 +80,41 @@ export function CubicacionBultoViewer3D({
       .sort((a, b) => a.codigo.localeCompare(b.codigo));
   }, [contenido]);
 
-  // =========
-  // Capas (slice por Y)
-  // =========
   const capas = useMemo(() => {
     if (!hasPositions) return [];
     const ys = contenido
       .map((c) => c.positionMm?.y)
       .filter((y): y is number => typeof y === "number")
-      .map((y) => roundKey(y / 1000)); // en metros y redondeado
-
-    const uniq = Array.from(new Set(ys)).sort((a, b) => a - b);
-    return uniq;
+      .map((y) => roundKey(y / 1000));
+    return Array.from(new Set(ys)).sort((a, b) => a - b);
   }, [contenido, hasPositions]);
 
-  // null = todas, number = y en metros (redondeado)
   const [capaSeleccionada, setCapaSeleccionada] = useState<number | null>(null);
 
-  // En modo OPERATIVO, por defecto “Todas”.
-  // En modo TECNICO, si hay varias capas, ayuda el slice.
-  const effectiveCapa = mode === "TECNICO" ? capaSeleccionada : null;
-
-  const contenidoFiltrado = useMemo(() => {
-    if (!hasPositions) return [];
-    if (effectiveCapa === null) return contenido;
-
-    return contenido.filter((c) => {
-      const yM = c.positionMm ? roundKey(c.positionMm.y / 1000) : null;
-      return yM !== null && yM === effectiveCapa;
-    });
-  }, [contenido, hasPositions, effectiveCapa]);
-
   const totalUnidadesDibujadas = useMemo(() => {
-    const arr = hasPositions ? contenidoFiltrado : [];
-    return arr.reduce(
+    if (!hasPositions) return 0;
+    return contenido.reduce(
       (acc, it) => acc + Math.max(1, Math.floor(it.unidades ?? 1)),
       0
     );
-  }, [contenidoFiltrado, hasPositions]);
+  }, [contenido, hasPositions]);
 
-  // =========
-  // Helpers de tamaño: gap visual (mm) + gapFactor
-  // =========
   const sizeWithVisualGap = (mm: number) => {
-    // gapFactor multiplica el tamaño, y además restamos visualGapMm (en mm)
-    // Para evitar negativos: clamped
     const scaled = mm * gapFactor;
     const adjusted = Math.max(0.1, scaled - visualGapMm);
-    return adjusted / 1000; // a metros
+    return adjusted / 1000;
   };
 
-  // =========
-  // Material params (dos modos)
-  // =========
   const bultoOpacity = mode === "OPERATIVO" ? 0.03 : 0.06;
   const bultoEdgesOpacity = mode === "OPERATIVO" ? 0.25 : 0.55;
 
   const cubeOpacityBase = mode === "OPERATIVO" ? 0.92 : 0.9;
   const cubeEdgesOpacity = mode === "OPERATIVO" ? 0.35 : 0.7;
 
-  // =========
-  // Piso interno del bulto (para anclar capa 1)
-  // =========
-  const pisoY = -bultoSizeM.y / 2; // y=base interna
+  const pisoY = -bultoSizeM.y / 2;
 
   return (
     <div className="w-full rounded-md border bg-slate-50 overflow-hidden">
-      {/* Header / Leyenda */}
       <div className="px-3 py-2 border-b bg-white space-y-2">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -207,7 +156,6 @@ export function CubicacionBultoViewer3D({
               </div>
             )}
 
-            {/* Toggle modo */}
             <div className="pt-1">
               <span className="text-[11px] text-slate-500 mr-2">Modo:</span>
               <div className="inline-flex rounded-md overflow-hidden border border-slate-200">
@@ -240,11 +188,10 @@ export function CubicacionBultoViewer3D({
           </div>
         </div>
 
-        {/* Slice por capas (solo modo técnico) */}
         {mode === "TECNICO" && hasPositions && capas.length > 1 && (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[11px] font-medium text-slate-700">
-              Vista por capas:
+              Foco por capas:
             </span>
 
             <button
@@ -278,18 +225,14 @@ export function CubicacionBultoViewer3D({
             ))}
 
             <span className="text-[11px] text-slate-500">
-              (ayuda a entender el apilado)
+              (solo atenúa lo no enfocado)
             </span>
           </div>
         )}
       </div>
 
-      {/* Canvas */}
       <div className="h-105 w-full">
-        <Canvas
-          camera={{ position: [1.25, 1.15, 1.25], fov: 45 }}
-          shadows={mode === "OPERATIVO"} // en operativo, sombras ayudan MUCHO
-        >
+        <Canvas camera={{ position: [1.25, 1.15, 1.25], fov: 45 }} shadows={mode === "OPERATIVO"}>
           <ambientLight intensity={0.9} />
           <directionalLight
             position={[3, 4, 3]}
@@ -301,7 +244,6 @@ export function CubicacionBultoViewer3D({
 
           <OrbitControls makeDefault />
 
-          {/* Gizmo / Grid solo en técnico */}
           {mode === "TECNICO" && (
             <>
               <GizmoHelper alignment="top-right" margin={[12, 12]}>
@@ -319,13 +261,14 @@ export function CubicacionBultoViewer3D({
             </>
           )}
 
-          {/* Auto-fit del encuadre */}
-          <Bounds fit clip observe margin={1.18}>
-            {/* Piso interno del bulto (ancla visual) */}
+          <Bounds fit observe margin={1.25}>
+            {/* Piso */}
             <mesh
-              position={[0, pisoY, 0]}
+              renderOrder={0}
+              position={[0, pisoY - 0.0005, 0]}
               rotation={[-Math.PI / 2, 0, 0]}
               receiveShadow={mode === "OPERATIVO"}
+              frustumCulled={false}
             >
               <planeGeometry args={[bultoSizeM.x, bultoSizeM.z]} />
               <meshStandardMaterial
@@ -334,28 +277,32 @@ export function CubicacionBultoViewer3D({
                 opacity={mode === "OPERATIVO" ? 0.12 : 0.08}
                 roughness={1}
                 metalness={0}
+                depthWrite={false}
               />
             </mesh>
 
-            {/* Bulto interno */}
-            <mesh>
+            {/* Bulto (CLAVE: depthWrite=false para no “tapar” contenido) */}
+            <mesh renderOrder={1} frustumCulled={false}>
               <boxGeometry args={[bultoSizeM.x, bultoSizeM.y, bultoSizeM.z]} />
               <meshStandardMaterial
                 color="#ffffff"
                 transparent
                 opacity={bultoOpacity}
+                depthWrite={false}
               />
-              {/* Edges: hacemos que “moleste” menos */}
-              <Edges color="#334155" opacity={bultoEdgesOpacity} transparent />
+              <Edges
+                color="#334155"
+                opacity={bultoEdgesOpacity}
+                transparent
+              />
             </mesh>
 
-            {/* Contenido */}
+            {/* Contenido: SIEMPRE visible (sin ocultarse por cámara) */}
             {hasPositions ? (
-              contenidoFiltrado.map((item, idx) => {
+              contenido.map((item, idx) => {
                 const pid = item.productoId;
                 const color = colorForProducto(pid);
 
-                // Visual gap (mm) + gapFactor
                 const sizeM = {
                   x: sizeWithVisualGap(item.dimUnidadMm.largo),
                   y: sizeWithVisualGap(item.dimUnidadMm.alto),
@@ -365,17 +312,21 @@ export function CubicacionBultoViewer3D({
                 const reps = Math.max(1, Math.floor(item.unidades ?? 1));
                 const pos = item.positionMm!;
 
-                // Si estás en modo técnico con una capa específica,
-                // podés “atenuar” lo no-seleccionado.
-                // (Hoy ya filtrás, pero si en el futuro querés ver “todas” con foco,
-                // esto te queda listo.)
-                const focusAlpha = 1;
+                const yKey = roundKey(pos.y / 1000);
+                const focusAlpha =
+                  mode === "TECNICO" && capaSeleccionada !== null
+                    ? yKey === capaSeleccionada
+                      ? 1
+                      : 0.18
+                    : 1;
 
                 const cubes: JSX.Element[] = [];
                 for (let i = 0; i < reps; i++) {
                   cubes.push(
                     <mesh
                       key={`${pid}-${idx}-${i}`}
+                      renderOrder={2}
+                      frustumCulled={false}
                       position={[pos.x / 1000, pos.y / 1000, pos.z / 1000]}
                       castShadow={mode === "OPERATIVO"}
                       receiveShadow={mode === "OPERATIVO"}
@@ -388,10 +339,9 @@ export function CubicacionBultoViewer3D({
                         roughness={mode === "OPERATIVO" ? 0.65 : 0.75}
                         metalness={0}
                       />
-                      {/* Contorno: más suave en operativo */}
                       <Edges
                         color="#0f172a"
-                        opacity={cubeEdgesOpacity}
+                        opacity={clamp01(cubeEdgesOpacity * focusAlpha)}
                         transparent
                       />
                     </mesh>
@@ -413,7 +363,6 @@ export function CubicacionBultoViewer3D({
         </div>
       )}
 
-      {/* Nota de UX (sutil) */}
       {hasPositions && (
         <div className="px-3 py-2 text-[11px] text-slate-500 border-t bg-white">
           Nota: la separación entre cajas es solo visual (no altera el packing).

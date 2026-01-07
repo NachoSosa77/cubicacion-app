@@ -64,13 +64,18 @@ model TipoProducto {
 
   // ✅ pesos/volúmenes como Decimal (pro)
   peso_por_unidad_venta      Decimal? @db.Decimal(10, 3)
-  peso_por_uniad_entrega     Decimal? @db.Decimal(10, 3)
+  peso_por_unidad_entrega     Decimal? @db.Decimal(10, 3)
   volumen_por_unidad_entrega Decimal? @db.Decimal(10, 6)
 
   unidad_entra_por_bulto Int
   alto_por_bulto         Int
   ancho_por_bulto        Int
   largo_por_bulto        Int
+
+  // ✅ A2
+  apilable                         Boolean  @default(true)
+  max_carga_superior_por_unidad_kg Decimal? @db.Decimal(10, 3)
+  factor_seguridad_compresion      Decimal  @default(1.000) @db.Decimal(5, 3)
 
   peso_por_bulto                Decimal?                       @db.Decimal(10, 3)
   volumen_por_bulto             Decimal?                       @db.Decimal(10, 6)
@@ -79,8 +84,7 @@ model TipoProducto {
   cubicacions                   Cubicacion[]
   cubicacionProductoContenedors CubicacionProductoContenedor[]
   tipoContenedorProductos       TipoContenedorProducto[]
-  divisionServicio              DivisionServicio?              @relation(fields: [divisionServicioId], references: [id])
-  divisionServicioId            Int?
+  divisionServicio DivisionServicio @relation(fields: [division_servicio_id], references: [id])
   cubicacionReglas              CubicacionRegla[]
   cubicacionConfiguracionItems  CubicacionConfiguracionItem[]
   bultoArmadoItems              BultoArmadoItem[]

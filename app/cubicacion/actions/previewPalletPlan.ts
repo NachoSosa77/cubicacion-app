@@ -135,8 +135,8 @@ export async function previewPalletPlan(params: {
     const pesoUnidad =
       it.peso_unidad_kg != null
         ? toNumber(it.peso_unidad_kg, 0)
-        : tp.peso_por_uniad_entrega != null
-        ? toNumber(tp.peso_por_uniad_entrega, 0)
+        : tp.peso_por_unidad_entrega != null
+        ? toNumber(tp.peso_por_unidad_entrega, 0)
         : tp.peso_por_unidad_venta != null
         ? toNumber(tp.peso_por_unidad_venta, 0)
         : 0;

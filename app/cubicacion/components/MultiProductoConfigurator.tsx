@@ -54,6 +54,8 @@ type OpcionCubicacion = {
   bultoEmpresaId?: number;
   productoId?: number;
 
+  previewParcial?: boolean;
+
   data3d: CubicacionBulto3DInput;
 };
 
@@ -198,6 +200,9 @@ export function MultiProductoConfigurator({
   );
 
   const [modoSimulacion, setModoSimulacion] = useState(false);
+  type SimModeUI = { kind: "MAX" } | { kind: "PCT"; pct: number };
+
+  const [simMode, setSimMode] = useState<SimModeUI>({ kind: "MAX" });
 
   const [packStdPolicy, setPackStdPolicy] = useState<PackStdPolicy>(
     "LIMITADO_POR_PRODUCTO"
@@ -222,7 +227,6 @@ export function MultiProductoConfigurator({
         largoUnidadMm: "",
         anchoUnidadMm: "",
         altoUnidadMm: "",
-        grosorParedMm: "",
       },
     ]);
   };
@@ -295,6 +299,28 @@ export function MultiProductoConfigurator({
         const codigoProducto = String((producto as any).codigo ?? "").trim();
         if (!codigoProducto) return null;
 
+        const pack = Number(
+          (producto as any).unidades_por_unidad_entrega ??
+            (producto as any).unidad_entra_por_bulto ??
+            0
+        );
+
+        const pesoPorBulto = Number((producto as any).peso_por_bulto ?? 0);
+
+        const pesoUnidadKg =
+          Number.isFinite(pesoPorBulto) &&
+          pesoPorBulto > 0 &&
+          Number.isFinite(pack) &&
+          pack > 0
+            ? pesoPorBulto / pack
+            : null;
+
+        const parseNum = (v: any): number | null => {
+          if (v === null || v === undefined) return null;
+          const s = String(v).replace(",", ".").trim();
+          const n = Number(s);
+          return Number.isFinite(n) ? n : null;
+        };
         return {
           itemKey: item.key,
           productoId: producto.id,
@@ -303,6 +329,14 @@ export function MultiProductoConfigurator({
           cantidadUnidades: cantidad,
           volumenUnidadM3: (largo * ancho * alto) / 1_000_000_000,
           dimUnidadMm: { largo, ancho, alto },
+          pesoUnidadKg,
+          apilable: Boolean((producto as any).apilable ?? true),
+          maxCargaSuperiorKg: parseNum(
+            (producto as any).max_carga_superior_por_unidad_kg
+          ),
+          factorSeguridadCompresion: parseNum(
+            (producto as any).factor_seguridad_compresion
+          ),
         };
       })
       .filter(isNotNull);
@@ -318,14 +352,71 @@ export function MultiProductoConfigurator({
   const mostrarPolicy =
     itemsMultiReal.length > 0 && hayBultosEmpresaHabilitados;
 
+  useEffect(() => {
+    console.log("DBG UI:", {
+      itemsMultiRealLen: itemsMultiReal.length,
+      hayBultosEmpresaHabilitados,
+      packingPolicy,
+      bultosEmpresaLen: bultosEmpresa.length,
+      bultosEmpresaHabilitados: bultosEmpresa.map((b) => ({
+        codigo: b.codigo,
+        habilitado: b.habilitado,
+        tipo: typeof (b as any).habilitado,
+      })),
+      itemsMultiReal: itemsMultiReal.map((it) => ({
+        codigo: it.codigoProducto,
+        cantidad: it.cantidadUnidades,
+        vol: it.volumenUnidadM3,
+        dim: it.dimUnidadMm,
+      })),
+    });
+  }, [
+    itemsMultiReal,
+    hayBultosEmpresaHabilitados,
+    packingPolicy,
+    bultosEmpresa,
+  ]);
   /* ============================
      ✅ Evaluaciones (dependen de policy)
   ============================ */
 
-  const evaluacionesAll = useMemo(() => {
+  console.log("bultosEmpresa:", bultosEmpresa?.length, bultosEmpresa);
+  console.log("itemsMultiReal:", itemsMultiReal);
+
+  /* const evaluacionesAll = useMemo(() => {
     if (!itemsMultiReal.length) return [];
     if (!hayBultosEmpresaHabilitados) return [];
-    return evaluarBultosEmpresa(itemsMultiReal, bultosEmpresa, packingPolicy);
+    return evaluarBultosEmpresa(
+      itemsMultiReal,
+      bultosEmpresa,
+      packingPolicy,
+      modoPacking
+    );
+  }, [
+    itemsMultiReal,
+    bultosEmpresa,
+    packingPolicy,
+    hayBultosEmpresaHabilitados,
+  ]); */
+
+  const evaluacionesAll = useMemo(() => {
+    if (!itemsMultiReal.length) {
+      return [];
+    }
+
+    if (!hayBultosEmpresaHabilitados) {
+      return [];
+    }
+    const modoPacking = modoSimulacion ? simMode : { kind: "MAX" as const };
+
+    const res = evaluarBultosEmpresa(
+      itemsMultiReal,
+      bultosEmpresa,
+      packingPolicy,
+      modoPacking
+    );
+
+    return res;
   }, [
     itemsMultiReal,
     bultosEmpresa,
@@ -334,7 +425,7 @@ export function MultiProductoConfigurator({
   ]);
 
   const topBultosEmpresa = useMemo(() => {
-    return evaluacionesAll.filter((e) => e.viable && e.packing3D).slice(0, 3);
+    return evaluacionesAll.filter((e) => e.viable).slice(0, 3);
   }, [evaluacionesAll]);
 
   /* ============================
@@ -365,6 +456,11 @@ export function MultiProductoConfigurator({
   /* ============================
      Opciones unificadas
   ============================ */
+
+  const safeCodigo = (v: unknown, fallback: string) => {
+    const s = typeof v === "string" ? v.trim() : "";
+    return s.length ? s : fallback;
+  };
 
   const opciones = useMemo((): OpcionCubicacion[] => {
     if (!itemsMultiReal.length) return [];
@@ -424,16 +520,27 @@ export function MultiProductoConfigurator({
 
             const ocupacionPct = null;
 
-            // ✅ FIX VISUAL: si no entra geométricamente (capFisica = 0),
-            // mostramos 1 unidad "representativa" para no ver el bulto vacío.
-            // NO altera cálculos, solo el render.
-            const unidadesPreview =
-              capFisica > 0 ? Math.min(unidadesEnBulto1, capFisica) : 1;
+            // ✅ VISUAL PROFESIONAL (pack cerrado):
+            // Dibujamos el pack real del “bulto 1” (unidadesEnBulto1),
+            // pero sin mentir: si físicamente no entra, dibujamos lo máximo que entra.
+            // Si capFisica = 0, dibujamos 1 unidad referencia.
+            let unidadesDibujadas = unidadesEnBulto1;
+
+            if (capFisica <= 0) {
+              unidadesDibujadas = 1;
+            } else {
+              // si el pack declarado excede la capacidad física, el viewer debe ser honesto
+              if (unidadesDibujadas > capFisica) unidadesDibujadas = capFisica;
+
+              // si por alguna razón unidadesEnBulto1 es 0 pero hay capacidad física,
+              // al menos dibujamos 1 para evitar bulto vacío (solo visual)
+              if (unidadesDibujadas <= 0) unidadesDibujadas = 1;
+            }
 
             let placements = buildGridPlacements(
               dimInterna,
               it.dimUnidadMm,
-              unidadesPreview
+              unidadesDibujadas
             );
 
             if (placements.length === 0) {
@@ -484,14 +591,14 @@ export function MultiProductoConfigurator({
     }
 
     // ===== 2) Opciones empresa — usa packing3D (fiel)
+    // ===== 2) Opciones empresa — preview fiel si hay placements; fallback si no
     for (const opt of topBultosEmpresa) {
-      if (!opt?.packing3D) continue;
-      const p3d = opt.packing3D;
-
       const b = (opt as any).bulto;
       const bultoId = Number(b?.id ?? 0);
 
-      const placementsOk = (p3d.placementsBulto1 ?? []).filter((pl) => {
+      const p3d = (opt as any).packing3D ?? null;
+
+      const placementsOk = (p3d?.placementsBulto1 ?? []).filter((pl: any) => {
         const d = pl?.dimUnidadMm;
         const pos = pl?.posCentroMm;
         return (
@@ -506,65 +613,106 @@ export function MultiProductoConfigurator({
         );
       });
 
-      if (!placementsOk.length) continue;
+      const previewParcial = !(p3d && placementsOk.length);
 
-      dbgUI("==== DEBUG BULTO EMPRESA (UI) ====");
-      dbgUI("BULTO:", b?.codigo);
-      dbgUI("DIM INTERNA:", p3d.dimInternaMm);
-      dbgUI(
-        "INSTRUCCIONES:",
-        p3d.instrucciones.map((i) => ({
-          codigo: i.codigo,
-          unidadesEnBulto1: i.unidadesEnBulto1,
-          capacidadSolo: i.capacidadTeoricaSiSolo,
-          orientacion: i.orientacionMm,
-        }))
-      );
-      dbgUI("PLACEMENTS (count):", placementsOk.length);
+      // Dimensiones del bulto (externas)
+      const dimExterna = toDimMm({
+        largo: b?.largo_mm,
+        ancho: b?.ancho_mm,
+        alto: b?.alto_mm,
+      });
 
-      const data3d: CubicacionBulto3DInput = {
-        bulto: {
-          codigo: String(b?.codigo ?? "").trim() || "BULTO",
-          dimExternaMm: toDimMm({
-            largo: b?.largo_mm,
-            ancho: b?.ancho_mm,
-            alto: b?.alto_mm,
-          }),
-          dimInternaMm: toDimMm(p3d.dimInternaMm),
-        },
-        contenido: placementsOk.map((pl) => ({
-          productoId: pl.productoId,
-          codigo: String(pl.codigo ?? "").trim() || `PROD-${pl.productoId}`,
-          unidades: 1,
-          dimUnidadMm: toDimMm(pl.dimUnidadMm),
-          positionMm: {
-            x: pl.posCentroMm.x,
-            y: pl.posCentroMm.y,
-            z: pl.posCentroMm.z,
+      // Dim interna: si el motor la trae, usamos esa; si no, usamos externa como fallback visual
+      const dimInternaFallback: DimMm = p3d?.dimInternaMm
+        ? toDimMm(p3d.dimInternaMm)
+        : dimExterna;
+
+      let data3d: CubicacionBulto3DInput;
+
+      if (!previewParcial) {
+        // ✅ Preview fiel (motor)
+        data3d = {
+          bulto: {
+            codigo: String(b?.codigo ?? "").trim() || "BULTO",
+            dimExternaMm: dimExterna,
+            dimInternaMm: toDimMm(p3d.dimInternaMm),
           },
-        })),
-      };
+          contenido: placementsOk.map((pl: any) => ({
+            productoId: pl.productoId,
+            codigo: String(pl.codigo ?? "").trim() || `PROD-${pl.productoId}`,
+            unidades: 1,
+            dimUnidadMm: toDimMm(pl.dimUnidadMm),
+            positionMm: {
+              x: pl.posCentroMm.x,
+              y: pl.posCentroMm.y,
+              z: pl.posCentroMm.z,
+            },
+          })),
+        };
+      } else {
+        // ✅ Preview parcial (fallback): 1 unidad “representativa”
+        const first = itemsMultiReal[0];
+        const pos = buildSinglePlacementOnFloor(
+          dimInternaFallback,
+          first.dimUnidadMm
+        );
+
+        data3d = {
+          bulto: {
+            codigo: String(b?.codigo ?? "").trim() || "BULTO",
+            dimExternaMm: dimExterna,
+            dimInternaMm: dimInternaFallback,
+          },
+          contenido: [
+            {
+              productoId: first.productoId,
+              codigo:
+                typeof first.codigoProducto === "string" &&
+                first.codigoProducto.trim()
+                  ? first.codigoProducto.trim()
+                  : `PROD-${Number(first.productoId ?? 0)}`,
+              unidades: 1,
+              dimUnidadMm: first.dimUnidadMm,
+              positionMm: pos,
+            },
+          ],
+        };
+      }
 
       const codigoB = String(b?.codigo ?? "").trim() || "Sin código";
+
+      // Métricas: si no hay packing3D, degradamos a defaults presentables
+      const unidadesEnBulto1 =
+        typeof p3d?.unidadesEnBulto1 === "number"
+          ? p3d.unidadesEnBulto1
+          : Math.min(unidadesTotalesAll, 1);
+
+      const bultosNecesariosEstimados =
+        typeof p3d?.bultosNecesariosEstimados === "number"
+          ? p3d.bultosNecesariosEstimados
+          : 1;
+
+      const ocupacionPct =
+        typeof p3d?.ocupacionVolumetricaPct === "number"
+          ? p3d.ocupacionVolumetricaPct
+          : null;
 
       out.push({
         kind: "EMPRESA_BULTO",
         key: `empresa-${
-          Number.isFinite(bultoId) && bultoId > 0 ? bultoId : Math.random()
+          Number.isFinite(bultoId) && bultoId > 0 ? bultoId : codigoB
         }`,
         bultoEmpresaId:
           Number.isFinite(bultoId) && bultoId > 0 ? bultoId : undefined,
         titulo: `Bulto empresa · ${codigoB}`,
-        subtitulo: isMultiProducto
-          ? `Contenedor logístico · Multi-producto · ${PACKING_POLICY_LABELS[packingPolicy].titulo}`
-          : `Contenedor logístico · 1 producto · ${PACKING_POLICY_LABELS[packingPolicy].titulo}`,
-        ocupacionPct:
-          typeof p3d.ocupacionVolumetricaPct === "number"
-            ? p3d.ocupacionVolumetricaPct
-            : null,
-        unidadesTotales: p3d.unidadesTotales ?? unidadesTotalesAll,
-        unidadesEnBulto1: p3d.unidadesEnBulto1,
-        bultosNecesariosEstimados: p3d.bultosNecesariosEstimados,
+        subtitulo: `${isMultiProducto ? "Multi-producto" : "1 producto"} · ${
+          PACKING_POLICY_LABELS[packingPolicy].titulo
+        }${previewParcial ? " · Preview parcial" : ""}`,
+        ocupacionPct,
+        unidadesTotales: p3d?.unidadesTotales ?? unidadesTotalesAll,
+        unidadesEnBulto1,
+        bultosNecesariosEstimados,
+        previewParcial,
         data3d,
       });
     }
@@ -713,9 +861,7 @@ export function MultiProductoConfigurator({
     }
 
     if (modoSimulacion) {
-      setMensaje(
-        "Simulación realizada. Revisá la previsualización 3D; no se guardó ningún lote."
-      );
+      setMensaje("Vista previa lista. No se guardó ningún lote.");
       return;
     }
 
@@ -784,14 +930,73 @@ export function MultiProductoConfigurator({
             checked={modoSimulacion}
             onChange={(e) => setModoSimulacion(e.target.checked)}
           />
-          Activar modo simulación (producto → bulto)
+          Vista previa (no guarda)
         </label>
         <p className="text-xs text-indigo-800">
-          Usá este modo para ensayar combinaciones de productos dentro del bulto
-          sin guardar un lote. Podés previsualizar en 3D y compartir la opción
+          Evaluá opciones y previsualizá el 3D sin crear lote. Ideal para demo o
+          comparación rápida. Podés previsualizar en 3D y compartir la opción
           seleccionada sin persistirla.
         </p>
       </div>
+
+      {modoSimulacion && (
+  <div className="mt-2 space-y-2 rounded-md border border-indigo-200 bg-white p-3">
+    <p className="text-sm font-semibold text-slate-800">
+      Modo de simulación
+    </p>
+
+    <label className="flex items-center gap-2 text-sm">
+      <input
+        type="radio"
+        checked={simMode.kind === "MAX"}
+        onChange={() => setSimMode({ kind: "MAX" })}
+      />
+      <span>
+        <strong>Máxima ocupación</strong>
+        <span className="block text-xs text-slate-500">
+          Llena el bulto hasta su capacidad operativa máxima.
+        </span>
+      </span>
+    </label>
+
+    <label className="flex items-start gap-2 text-sm">
+      <input
+        type="radio"
+        checked={simMode.kind === "PCT"}
+        onChange={() => setSimMode({ kind: "PCT", pct: 80 })}
+      />
+      <span className="flex-1">
+        <strong>Porcentaje de ocupación</strong>
+        <span className="block text-xs text-slate-500">
+          Simula un llenado parcial del bulto.
+        </span>
+
+        {simMode.kind === "PCT" && (
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              max={100}
+              className="w-20 rounded-md border px-2 py-1 text-sm"
+              value={simMode.pct}
+              onChange={(e) =>
+                setSimMode({
+                  kind: "PCT",
+                  pct: Math.min(
+                    100,
+                    Math.max(1, Number(e.target.value) || 1)
+                  ),
+                })
+              }
+            />
+            <span className="text-xs text-slate-600">% de ocupación</span>
+          </div>
+        )}
+      </span>
+    </label>
+  </div>
+)}
+
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Tabla */}
@@ -1101,7 +1306,8 @@ export function MultiProductoConfigurator({
                 <strong>Respetar pack del producto</strong>
                 <br />
                 <span className="text-xs text-slate-500">
-                  Usa el límite declarado (unidades_por_unidad_entrega).
+                  Usa el límite declarado (unidades_por_unidad_entrega)
+                  Operativo / pack cerrado, no optimiza.
                 </span>
               </span>
             </label>
@@ -1116,7 +1322,9 @@ export function MultiProductoConfigurator({
                 <strong>Maximizar por cubicación</strong>
                 <br />
                 <span className="text-xs text-slate-500">
-                  Llena el bulto según capacidad física por medidas.
+                  Llena el bulto según capacidad física por medidas. Simulación
+                  / optimización por geometría (puede diferir del pack
+                  declarado).
                 </span>
               </span>
             </label>
@@ -1155,6 +1363,13 @@ export function MultiProductoConfigurator({
                 </p>
               </div>
             </div>
+          </div>
+        )}
+
+        {selectedOpt?.previewParcial && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+            Preview parcial: el motor no devolvió placements para este bulto. Se
+            muestra una unidad representativa.
           </div>
         )}
 
@@ -1229,7 +1444,7 @@ export function MultiProductoConfigurator({
             {isPending
               ? "Guardando..."
               : modoSimulacion
-              ? "Simular (no guarda)"
+              ? "Listo (no guarda)"
               : "Guardar cubicación"}
           </button>
         </div>
