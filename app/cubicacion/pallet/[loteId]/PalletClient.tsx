@@ -524,7 +524,7 @@ export function PalletClient({
 
         <div className="space-y-1">
           <label className="text-sm font-medium text-slate-700">
-            Unidades deseadas (opcional)
+            Unidades deseadas (Bultos)
           </label>
           <input
             type="number"
@@ -635,7 +635,7 @@ export function PalletClient({
               <div className="grid gap-3 md:grid-cols-5 text-sm">
                 <div className="rounded-md border p-3 space-y-2">
                   <div className="flex items-center justify-between">
-                    <p className="text-slate-500">Unidades colocadas</p>
+                    <p className="text-slate-500">Bultos colocados</p>
                     <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
                       Simulación
                     </span>
