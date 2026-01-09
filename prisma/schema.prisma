@@ -668,49 +668,59 @@ model Transporte {
 model CubicacionLote {
   id Int @id @default(autoincrement())
 
-  empresaId   Int     @map("empresa_id")
-  descripcion String?
+  empresa_id   Int
+  descripcion  String?
+
+  // NUEVO: totales snapshot del lote (consistencia para pallet/camión)
+  unidades_totales Int @default(0)
+  bultos_totales   Int @default(0)
 
   packing_policy   PackingPolicy         @default(OPERATIVO_AGRUPADO)
   tipo_bulto       TipoBultoSeleccionado @default(EMPRESA_BULTO)
   bulto_empresa_id Int?
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
-  empresa      empresa       @relation(fields: [empresaId], references: [id])
-  bultoEmpresa EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id])
-
-  items   CubicacionLoteItem[]
-  pallets CubicacionPalletPlan[]
-
-  camionPlans CubicacionCamionPlan[]
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   bulto_layout Json? @db.Json
 
-  @@index([empresaId], map: "idx_lote_empresa")
+  empresa       empresa       @relation(fields: [empresa_id], references: [id])
+  bulto_empresa EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id])
+
+  items        CubicacionLoteItem[]
+  pallets      CubicacionPalletPlan[]
+  camion_plans CubicacionCamionPlan[]
+
+  @@index([empresa_id], map: "idx_lote_empresa")
   @@map("cubicacion_lote")
 }
+
 
 model CubicacionLoteItem {
   id Int @id @default(autoincrement())
 
-  loteId         Int @map("lote_id")
-  tipoProductoId Int @map("tipo_producto_id")
+  lote_id         Int
+  tipo_producto_id Int
 
   cantidad_unidades Int
-  volumen_total_m3  Float
 
-  // opcional para auditoría (no rompe nada)
+  // NUEVO: lo que seleccionó/derivó el sistema al guardar (consistencia)
+  cantidad_bultos    Int @default(1)
+  unidades_por_bulto Int?
+
+  volumen_total_m3 Float
+
+  // snapshot para reproducibilidad
   dim_unidad_mm  Json?  @db.Json
   peso_unidad_kg Float?
 
-  createdAt DateTime @default(now()) @map("created_at")
+  created_at DateTime @default(now())
 
-  lote         CubicacionLote @relation(fields: [loteId], references: [id], onDelete: Cascade)
-  tipoProducto TipoProducto   @relation(fields: [tipoProductoId], references: [id])
+  lote          CubicacionLote @relation(fields: [lote_id], references: [id], onDelete: Cascade)
+  tipo_producto TipoProducto   @relation(fields: [tipo_producto_id], references: [id])
 
-  @@index([loteId], map: "idx_lote_item")
+  @@index([lote_id], map: "idx_lote_item")
+  @@index([tipo_producto_id])
   @@map("cubicacion_lote_item")
 }
 
