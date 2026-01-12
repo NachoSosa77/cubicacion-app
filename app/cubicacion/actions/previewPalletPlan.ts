@@ -24,8 +24,8 @@ export async function previewPalletPlan(params: {
   tipoContenedorId: number;
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
   objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
-  objetivoUnidades?: number;
-  objetivoOcupacion?: number;
+  objetivoUnidades?: number; // bultos objetivo (según tu UI)
+  objetivoOcupacion?: number; // 0..1 (tu UI ya lo manda /100)
   modoSimulacion?: boolean;
 }) {
   const {
@@ -39,14 +39,17 @@ export async function previewPalletPlan(params: {
     modoSimulacion,
   } = params;
 
-  // 1) Cargar contenedor + lote
+  // 1) Cargar contenedor + lote (snake_case)
   const [contenedor, lote] = await Promise.all([
     prisma.tipoContenedor.findUnique({ where: { id: tipoContenedorId } }),
     prisma.cubicacionLote.findUnique({
       where: { id: loteId },
       include: {
-        bultoEmpresa: true,
-        items: { include: { tipoProducto: true } },
+        bulto_empresa: true, // ✅ snake_case
+        items: {
+          include: { tipo_producto: true }, // ✅ snake_case
+          orderBy: { id: "asc" },
+        },
       },
     }),
   ]);
@@ -55,7 +58,7 @@ export async function previewPalletPlan(params: {
   if (!lote) throw new Error("Lote inexistente.");
   if (!lote.items?.length) throw new Error("El lote no tiene ítems.");
 
-  // 2) Validar dimensiones del contenedor (tu schema permite null)
+  // 2) Validar dimensiones del contenedor (pueden venir null)
   const largoM = toNumber(contenedor.largo_mts, 0);
   const anchoM = toNumber(contenedor.ancho_mts, 0);
   const altoM = toNumber(contenedor.alto_mts, 0);
@@ -64,7 +67,7 @@ export async function previewPalletPlan(params: {
   requirePositive(anchoM, "El contenedor no tiene ancho_mts válido.");
   requirePositive(altoM, "El contenedor no tiene alto_mts válido.");
 
-  // 3) Regla (la más específica del ejemplo actual)
+  // 3) Regla operativa (ejemplo actual: por empresa+contenedor, genérica de producto/transporte)
   const regla = await prisma.cubicacionRegla.findFirst({
     where: {
       empresaId,
@@ -76,38 +79,57 @@ export async function previewPalletPlan(params: {
   });
 
   // 4) Si lote EMPRESA_BULTO, debe existir la relación
-  if (lote.tipo_bulto === "EMPRESA_BULTO" && !lote.bultoEmpresa) {
+  if (lote.tipo_bulto === "EMPRESA_BULTO" && !lote.bulto_empresa) {
     throw new Error(
-      "El lote es EMPRESA_BULTO pero no tiene bultoEmpresa asociado (bulto_empresa_id)."
+      "El lote es EMPRESA_BULTO pero no tiene bulto_empresa asociado (bulto_empresa_id)."
     );
   }
 
-  // 5) Armado de items para el cálculo desde el lote
+  // 5) Armado de items para el cálculo desde snapshot del lote
   const items = lote.items.map((it) => {
-    const tp = it.tipoProducto;
+    const tp = it.tipo_producto;
 
     const unidades = toNumber(it.cantidad_unidades, 0);
     requirePositive(unidades, `Item ${tp.codigo}: cantidad_unidades inválida.`);
 
-    const unidadesPorBulto = Math.max(
+    // ✅ snapshot (si existe) para consistencia
+    const unidadesPorBultoSnapshot =
+      it.unidades_por_bulto != null && toNumber(it.unidades_por_bulto, 0) > 0
+        ? toNumber(it.unidades_por_bulto, 0)
+        : null;
+
+    const unidadesPorBultoFallback = Math.max(
       1,
       toNumber(tp.unidad_entra_por_bulto, 1)
     );
-    const cantidadBultos = ceilDiv(unidades, unidadesPorBulto);
+
+    const unidadesPorBulto =
+      unidadesPorBultoSnapshot ?? unidadesPorBultoFallback;
+
+    const cantidadBultosSnapshot =
+      it.cantidad_bultos != null && toNumber(it.cantidad_bultos, 0) > 0
+        ? toNumber(it.cantidad_bultos, 0)
+        : 0;
+
+    const cantidadBultos =
+      cantidadBultosSnapshot > 0
+        ? cantidadBultosSnapshot
+        : ceilDiv(unidades, unidadesPorBulto);
+
     requirePositive(
       cantidadBultos,
-      `Item ${tp.codigo}: no se pudo derivar cantidadBultos.`
+      `Item ${tp.codigo}: no se pudo determinar cantidad_bultos.`
     );
 
-    const codigo = String(tp.codigo ?? `PROD-${it.tipoProductoId}`).trim();
+    const codigo = String(tp.codigo ?? `PROD-${it.tipo_producto_id}`).trim();
     const descripcion = String(tp.descripcion ?? "");
 
     const dimBultoMm =
       lote.tipo_bulto === "EMPRESA_BULTO"
         ? {
-            largo: toNumber(lote.bultoEmpresa!.largo_mm, 0),
-            ancho: toNumber(lote.bultoEmpresa!.ancho_mm, 0),
-            alto: toNumber(lote.bultoEmpresa!.alto_mm, 0),
+            largo: toNumber(lote.bulto_empresa!.largo_mm, 0),
+            ancho: toNumber(lote.bulto_empresa!.ancho_mm, 0),
+            alto: toNumber(lote.bulto_empresa!.alto_mm, 0),
           }
         : {
             largo: toNumber(tp.largo_por_bulto, 0),
@@ -128,7 +150,7 @@ export async function previewPalletPlan(params: {
       `El producto ${codigo} no tiene alto de bulto válido.`
     );
 
-    // Peso bulto: preferimos peso_por_bulto; si no, estimamos desde peso unidad.
+    // Peso bulto: preferimos peso_por_bulto; si no, estimamos desde peso unidad * unidadesPorBulto
     const pesoPorBulto =
       tp.peso_por_bulto != null ? toNumber(tp.peso_por_bulto, 0) : 0;
 
@@ -147,7 +169,7 @@ export async function previewPalletPlan(params: {
         : Math.max(0, pesoUnidad) * unidadesPorBulto;
 
     return {
-      tipoProductoId: it.tipoProductoId,
+      tipoProductoId: it.tipo_producto_id, // ✅ ojo: el motor espera tipoProductoId
       codigo,
       descripcion,
       cantidadBultos,
@@ -161,14 +183,18 @@ export async function previewPalletPlan(params: {
     loteId: lote.id,
     tipo_bulto: lote.tipo_bulto,
     bulto_empresa_id: lote.bulto_empresa_id,
-    bultoEmpresa: lote.bultoEmpresa
+    bulto_empresa: lote.bulto_empresa
       ? {
-          id: lote.bultoEmpresa.id,
-          largo_mm: lote.bultoEmpresa.largo_mm,
-          ancho_mm: lote.bultoEmpresa.ancho_mm,
-          alto_mm: lote.bultoEmpresa.alto_mm,
+          id: lote.bulto_empresa.id,
+          largo_mm: lote.bulto_empresa.largo_mm,
+          ancho_mm: lote.bulto_empresa.ancho_mm,
+          alto_mm: lote.bulto_empresa.alto_mm,
         }
       : null,
+    snapshot: {
+      unidades_totales: lote.unidades_totales,
+      bultos_totales: lote.bultos_totales,
+    },
   });
 
   console.log(
@@ -181,11 +207,12 @@ export async function previewPalletPlan(params: {
     }))
   );
 
-  // 6) Calcular plan
+  // 6) Objetivos
   const parsedObjetivoUnidades =
     objetivoUnidades != null && toNumber(objetivoUnidades, 0) > 0
       ? toNumber(objetivoUnidades, 0)
       : undefined;
+
   const parsedObjetivoOcupacion =
     objetivoOcupacion != null ? Number(objetivoOcupacion) : undefined;
 
@@ -194,10 +221,11 @@ export async function previewPalletPlan(params: {
     (parsedObjetivoOcupacion < 0 || parsedObjetivoOcupacion > 1)
   ) {
     throw new Error(
-      "El objetivo de ocupación debe ser un número entre 0 y 1 (por ejemplo, 0.85)."
+      "El objetivo de ocupación debe estar entre 0 y 1 (ej: 0.50)."
     );
   }
 
+  // 7) Calcular plan
   const plan = calcularPalletPlan({
     contenedor: {
       id: contenedor.id,

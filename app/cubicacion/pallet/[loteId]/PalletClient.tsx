@@ -3,6 +3,7 @@
 import { CubicacionPalletViewer3D } from "@/app/cubicacion/components/CubicacionPalletViewer3D";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
+import { previewPalletPlan } from "../../actions/previewPalletPlan";
 
 /* =========================
    Types (plain, client-safe)
@@ -312,7 +313,7 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
 
     startPreview(async () => {
       try {
-        const res = await onPreview(form);
+        const res = await previewPalletPlan(payload);
         setResult(res.plan);
       } catch (e) {
         console.error(e);

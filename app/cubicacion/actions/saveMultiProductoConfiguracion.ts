@@ -1,14 +1,22 @@
-// src/app/cubicacion/actions/saveMultiProductoConfiguracion.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import type { PackingPolicy } from "../lib/packing-policy";
 
 export interface MultiProductoConfiguracionItemInput {
   tipoProductoId: number;
   cantidadUnidades: number;
-  cantidadBultos: number; // hoy no se persiste en lote_item (tu modelo no lo tiene)
+
+  // ✅ ahora SÍ se persisten en lote_item
+  cantidadBultos: number;
+  unidadesPorBulto: number;
+
   volumenTotalM3: number;
+
+  // ✅ snapshot reproducible (opcional pero recomendado)
+  dimUnidadMm?: { largo: number; ancho: number; alto: number } | null;
+  pesoUnidadKg?: number | null;
 }
 
 export interface MultiProductoConfiguracionInput {
@@ -33,13 +41,21 @@ function assertValidInput(input: MultiProductoConfiguracionInput) {
     if (!Number.isFinite(it.cantidadUnidades) || it.cantidadUnidades <= 0) {
       throw new Error(`Item ${idx + 1}: cantidadUnidades inválida.`);
     }
+
+    // ✅ NUEVO: validamos snapshot del pack elegido
+    if (!Number.isFinite(it.unidadesPorBulto) || it.unidadesPorBulto <= 0) {
+      throw new Error(`Item ${idx + 1}: unidadesPorBulto inválido.`);
+    }
+    if (!Number.isFinite(it.cantidadBultos) || it.cantidadBultos <= 0) {
+      throw new Error(`Item ${idx + 1}: cantidadBultos inválida.`);
+    }
+
     if (!Number.isFinite(it.volumenTotalM3) || it.volumenTotalM3 <= 0) {
       throw new Error(`Item ${idx + 1}: volumenTotalM3 inválido.`);
     }
   }
 
   if (input.tipoBulto === "EMPRESA_BULTO") {
-    // En modo empresa, bultoEmpresaId debería venir
     if (
       input.bultoEmpresaId == null ||
       !Number.isInteger(input.bultoEmpresaId) ||
@@ -47,9 +63,6 @@ function assertValidInput(input: MultiProductoConfiguracionInput) {
     ) {
       throw new Error("bultoEmpresaId inválido para tipoBulto EMPRESA_BULTO.");
     }
-  } else {
-    // En estándar, lo normal es null
-    // (no tiramos error si viene, pero podrías forzarlo a null)
   }
 }
 
@@ -58,47 +71,60 @@ export async function saveMultiProductoConfiguracion(
 ): Promise<SaveMultiProductoConfiguracionResult> {
   assertValidInput(input);
 
-  const empresaId = 1; // TODO: derivar desde usuario logueado
+  const empresa_id = 1; // TODO: derivar desde usuario logueado
 
-  // Prearmamos data fuera (reduce aún más el tiempo dentro de tx)
   const itemsData = input.items.map((it) => ({
-    tipoProductoId: it.tipoProductoId,
+    tipo_producto_id: it.tipoProductoId,
     cantidad_unidades: it.cantidadUnidades,
+    cantidad_bultos: it.cantidadBultos,
+    unidades_por_bulto: it.unidadesPorBulto,
     volumen_total_m3: it.volumenTotalM3,
+    dim_unidad_mm: it.dimUnidadMm
+      ? (it.dimUnidadMm as Prisma.InputJsonValue)
+      : Prisma.DbNull,
+    peso_unidad_kg: it.pesoUnidadKg ?? null,
   }));
 
   const res = await prisma.$transaction(
     async (tx) => {
-      // 1) lote
       const lote = await tx.cubicacionLote.create({
         data: {
-          empresaId,
+          empresa: { connect: { id: empresa_id } },
           descripcion: input.descripcion ?? null,
           packing_policy: input.packingPolicy as any,
           tipo_bulto: input.tipoBulto as any,
-          bulto_empresa_id:
-            input.tipoBulto === "EMPRESA_BULTO"
-              ? input.bultoEmpresaId ?? null
-              : null,
+          ...(input.tipoBulto === "EMPRESA_BULTO"
+            ? { bulto_empresa: { connect: { id: input.bultoEmpresaId! } } }
+            : {}),
         },
         select: { id: true },
       });
 
-      // 2) items (1 query)
       await tx.cubicacionLoteItem.createMany({
         data: itemsData.map((d) => ({
-          loteId: lote.id,
+          lote_id: lote.id,
           ...d,
         })),
       });
 
+      // ✅ opcional: setear totales del lote desde input (consistencia)
+      const unidades_totales = input.items.reduce(
+        (acc, it) => acc + it.cantidadUnidades,
+        0
+      );
+      const bultos_totales = input.items.reduce(
+        (acc, it) => acc + it.cantidadBultos,
+        0
+      );
+
+      await tx.cubicacionLote.update({
+        where: { id: lote.id },
+        data: { unidades_totales, bultos_totales },
+      });
+
       return { loteId: lote.id };
     },
-    {
-      // IMPORTANTE: evita P2028 cuando hay latencia/espera de conexión
-      maxWait: 10_000, // cuánto espera para conseguir conexión
-      timeout: 20_000, // cuánto dura la transacción interactiva
-    }
+    { maxWait: 10_000, timeout: 20_000 }
   );
 
   return res;

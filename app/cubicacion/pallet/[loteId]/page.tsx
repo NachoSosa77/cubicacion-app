@@ -2,60 +2,43 @@
 import { prisma } from "@/lib/prisma";
 import { PalletClient } from "./PalletClient";
 
-// Importá tus server actions reales (ajustá rutas/nombres)
-import { previewPalletPlan } from "@/app/cubicacion/actions/previewPalletPlan";
-import { savePalletPlan } from "@/app/cubicacion/actions/savePalletPlan";
-
-export default async function Page({
-  params,
-}: {
+type PageProps = {
   params: Promise<{ loteId: string }>;
-}) {
-  const { loteId } = await params;
-  const id = Number(loteId);
+};
 
+export default async function Page({ params }: PageProps) {
+  const { loteId } = await params;
+
+  const id = Number(loteId);
   if (!Number.isFinite(id) || id <= 0) {
     return (
       <div className="p-6">
-        <p className="text-red-600">loteId inválido.</p>
+        <p className="text-red-700">loteId inválido.</p>
       </div>
     );
   }
 
-  // ✅ IMPORTANTE: relaciones snake_case según tu schema
-  const loteDb = await prisma.cubicacionLote.findUnique({
+  const lote = await prisma.cubicacionLote.findUnique({
     where: { id },
     include: {
-      bulto_empresa: true, // ✅ NO bultoEmpresa
+      bulto_empresa: true,
       items: {
-        include: {
-          tipo_producto: {
-            select: {
-              id: true,
-              codigo: true,
-              descripcion: true,
-              unidad_entra_por_bulto: true,
-              largo_por_bulto: true,
-              ancho_por_bulto: true,
-              alto_por_bulto: true,
-            },
-          },
-        },
+        include: { tipo_producto: true },
         orderBy: { id: "asc" },
       },
     },
   });
 
-  if (!loteDb) {
+  if (!lote) {
     return (
       <div className="p-6">
-        <p className="text-slate-700">Lote no encontrado.</p>
+        <p className="text-slate-700">No se encontró el lote #{id}.</p>
       </div>
     );
   }
 
   const contenedores = await prisma.tipoContenedor.findMany({
-    where: { habilitado: true, deleted_at: null },
+    where: { habilitado: true },
     orderBy: { descripcion: "asc" },
     select: {
       id: true,
@@ -69,26 +52,25 @@ export default async function Page({
     },
   });
 
-  // ✅ Adaptación: PalletClient hoy está tipado con camelCase adentro de items (tipoProductoId, tipoProducto)
-  // Como tu DB ahora es snake_case, tenés 2 caminos:
-  // A) cambiar PalletClient para que use snake_case (recomendado),
-  // B) mapear acá a lo que espera PalletClient (rápido y seguro).
-  //
-  // Te dejo el B para destrabar ya:
-
-  const lote = {
-    id: loteDb.id,
-    descripcion: loteDb.descripcion ?? null,
-    items: loteDb.items.map((it) => ({
+  const loteClient = {
+    id: lote.id,
+    descripcion: lote.descripcion ?? null,
+    unidades_totales: lote.unidades_totales ?? 0,
+    bultos_totales: lote.bultos_totales ?? 0,
+    packing_policy: lote.packing_policy,
+    tipo_bulto: lote.tipo_bulto,
+    bulto_empresa_id: lote.bulto_empresa_id ?? null,
+    bulto_layout: lote.bulto_layout ?? null,
+    items: lote.items.map((it) => ({
       id: it.id,
-      tipoProductoId: it.tipo_producto_id, // 👈 mapeo
+      tipo_producto_id: it.tipo_producto_id,
       cantidad_unidades: it.cantidad_unidades,
       cantidad_bultos: it.cantidad_bultos,
       unidades_por_bulto: it.unidades_por_bulto ?? null,
       volumen_total_m3: it.volumen_total_m3,
       dim_unidad_mm: it.dim_unidad_mm ?? null,
       peso_unidad_kg: it.peso_unidad_kg ?? null,
-      tipoProducto: {
+      tipo_producto: {
         id: it.tipo_producto.id,
         codigo: it.tipo_producto.codigo,
         descripcion: it.tipo_producto.descripcion,
@@ -100,20 +82,20 @@ export default async function Page({
     })),
   };
 
+  const contenedoresClient = contenedores.map((c) => ({
+    id: c.id,
+    codigo: c.codigo,
+    descripcion: c.descripcion,
+    largo_mts: c.largo_mts,
+    ancho_mts: c.ancho_mts,
+    alto_mts: c.alto_mts,
+    peso_max_kg: c.peso_max_kg,
+    peso_pallet_kg: c.peso_pallet_kg ?? null,
+  }));
+
   return (
     <div className="p-6">
-      <PalletClient
-        lote={lote as any}
-        contenedores={contenedores as any}
-        onPreview={async (params) => {
-          "use server";
-          return previewPalletPlan({ loteId: loteDb.id, ...params });
-        }}
-        onGuardar={async (params) => {
-          "use server";
-          return savePalletPlan({ loteId: loteDb.id, ...params });
-        }}
-      />
+      <PalletClient lote={loteClient as any} contenedores={contenedoresClient as any} />
     </div>
   );
 }

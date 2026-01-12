@@ -781,6 +781,89 @@ export function MultiProductoConfigurator({
 
   const hasPreview = Boolean(preview3DData);
 
+  function ceilDiv(a: number, b: number): number {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return 0;
+    return Math.ceil(a / b);
+  }
+
+  function toPositiveInt(n: unknown, fallback = 0) {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return fallback;
+    const y = Math.floor(x);
+    return y > 0 ? y : fallback;
+  }
+
+  function getPackDeclarado(prod: any): number | null {
+    const packRaw = Number(
+      prod?.unidades_por_unidad_entrega ?? prod?.unidad_entra_por_bulto ?? 0
+    );
+    return Number.isFinite(packRaw) && packRaw > 0 ? packRaw : null;
+  }
+
+  /**
+   * Deriva unidadesPorBulto por SKU según la opción seleccionada.
+   * - STD: pack declarado vs capacidad física, según packStdPolicy
+   * - EMPRESA: cuenta placements del bulto1 (layout real) por productoId
+   */
+  function deriveUnidadesPorBultoByProducto(params: {
+    selectedOpt: any; // OpcionCubicacion
+    itemsMultiReal: any[]; // MultiProductoUnidadInputReal[]
+    productos: any[]; // ITipoProducto[]
+    packStdPolicy: "LIMITADO_POR_PRODUCTO" | "MAXIMIZAR_POR_CUBICACION";
+  }) {
+    const { selectedOpt, itemsMultiReal, productos, packStdPolicy } = params;
+
+    // ===== PRODUCTO_ESTANDAR (solo 1 producto)
+    if (selectedOpt.kind === "PRODUCTO_ESTANDAR") {
+      const first = itemsMultiReal[0];
+      const prod = productos.find((p: any) => p.id === first.productoId) as any;
+
+      const packDeclarado = getPackDeclarado(prod);
+
+      // Capacidad física desde la geometría del bulto interno (sale del data3d)
+      const dimInterna = selectedOpt?.data3d?.bulto?.dimInternaMm;
+      const dimUnidad = first?.dimUnidadMm;
+
+      const capFisica =
+        dimInterna && dimUnidad
+          ? (() => {
+              const nx = Math.floor(dimInterna.largo / dimUnidad.largo);
+              const nz = Math.floor(dimInterna.ancho / dimUnidad.ancho);
+              const ny = Math.floor(dimInterna.alto / dimUnidad.alto);
+              if (nx <= 0 || nz <= 0 || ny <= 0) return 0;
+              return nx * nz * ny;
+            })()
+          : 0;
+
+      const unidadesPorBulto =
+        packStdPolicy === "MAXIMIZAR_POR_CUBICACION"
+          ? capFisica
+          : packDeclarado ?? capFisica;
+
+      return new Map<number, number>([
+        [first.productoId, Math.max(1, toPositiveInt(unidadesPorBulto, 1))],
+      ]);
+    }
+
+    // ===== EMPRESA_BULTO (multi o mono)
+    // Necesitamos layout real (placements), no preview parcial.
+    const contenido = selectedOpt?.data3d?.contenido ?? [];
+    const map = new Map<number, number>();
+
+    for (const pl of contenido) {
+      const pid = toPositiveInt(pl?.productoId, 0);
+      if (!pid) continue;
+      map.set(pid, (map.get(pid) ?? 0) + 1); // cada placement es 1 unidad
+    }
+
+    // Aseguramos mínimo 1 para cualquier SKU presente
+    for (const it of itemsMultiReal) {
+      if (!map.has(it.productoId)) map.set(it.productoId, 1);
+    }
+
+    return map;
+  }
+
   /* ============================
      Submit
   ============================ */
@@ -847,13 +930,64 @@ export function MultiProductoConfigurator({
       return;
     }
 
+    // ✅ Profesional: no guardar EMPRESA_BULTO con preview parcial
+    if (selectedOpt.kind === "EMPRESA_BULTO" && selectedOpt.previewParcial) {
+      setErrores([
+        "No se puede guardar esta opción porque es un 'Preview parcial' (no hay layout real para derivar bultos por producto). Elegí otra opción viable o desactivá el modo que evita placements.",
+      ]);
+      return;
+    }
+
+    const unidadesPorBultoByProd = deriveUnidadesPorBultoByProducto({
+      selectedOpt,
+      itemsMultiReal,
+      productos,
+      packStdPolicy,
+    });
+
+    const ceilDiv = (a: number, b: number) => (b > 0 ? Math.ceil(a / b) : 999999);
+
     const itemsToSave: MultiProductoConfiguracionItemInput[] =
-      itemsMultiReal.map((i) => ({
-        tipoProductoId: i.productoId,
-        cantidadUnidades: i.cantidadUnidades,
-        cantidadBultos: 1,
-        volumenTotalM3: i.volumenUnidadM3 * i.cantidadUnidades,
-      }));
+      itemsMultiReal.map((i) => {
+        const producto = productos.find((p) => p.id === i.productoId) as any;
+
+    // ✅ para STD: respetamos el pack elegido en UI
+    // (packStdPolicy ya define capacidadElegida en tu lógica de opciones)
+    // Como STD solo aplica cuando hay 1 producto, tomamos la opción seleccionada.
+    let unidadesPorBulto = 1;
+
+    if (selectedIsStd && selectedOpt) {
+      // en STD "unidadesEnBulto1" representa el pack elegido (capacidadElegida) o el límite operativo
+      unidadesPorBulto = Math.max(1, Number(selectedOpt.unidadesEnBulto1) || 1);
+    } else {
+      // fallback razonable (para empresa o si algo falla)
+      const packRaw = Number(
+        producto?.unidades_por_unidad_entrega ??
+          producto?.unidad_entra_por_bulto ??
+          0
+      );
+      unidadesPorBulto = Number.isFinite(packRaw) && packRaw > 0 ? packRaw : 1;
+    }
+
+    const cantidadBultos = ceilDiv(i.cantidadUnidades, unidadesPorBulto);
+
+    // peso unidad (opcional)
+    const pesoPorBulto = Number(producto?.peso_por_bulto ?? 0);
+    const pesoUnidadKg =
+      Number.isFinite(pesoPorBulto) && pesoPorBulto > 0 && unidadesPorBulto > 0
+        ? pesoPorBulto / unidadesPorBulto
+        : null;
+
+    return {
+      tipoProductoId: i.productoId,
+      cantidadUnidades: i.cantidadUnidades,
+      unidadesPorBulto,
+      cantidadBultos,
+      volumenTotalM3: i.volumenUnidadM3 * i.cantidadUnidades,
+      dimUnidadMm: i.dimUnidadMm,
+      pesoUnidadKg,
+    };
+  });
 
     if (!itemsToSave.length) {
       setErrores(["No hay filas válidas para guardar."]);
@@ -940,63 +1074,62 @@ export function MultiProductoConfigurator({
       </div>
 
       {modoSimulacion && (
-  <div className="mt-2 space-y-2 rounded-md border border-indigo-200 bg-white p-3">
-    <p className="text-sm font-semibold text-slate-800">
-      Modo de simulación
-    </p>
+        <div className="mt-2 space-y-2 rounded-md border border-indigo-200 bg-white p-3">
+          <p className="text-sm font-semibold text-slate-800">
+            Modo de simulación
+          </p>
 
-    <label className="flex items-center gap-2 text-sm">
-      <input
-        type="radio"
-        checked={simMode.kind === "MAX"}
-        onChange={() => setSimMode({ kind: "MAX" })}
-      />
-      <span>
-        <strong>Máxima ocupación</strong>
-        <span className="block text-xs text-slate-500">
-          Llena el bulto hasta su capacidad operativa máxima.
-        </span>
-      </span>
-    </label>
-
-    <label className="flex items-start gap-2 text-sm">
-      <input
-        type="radio"
-        checked={simMode.kind === "PCT"}
-        onChange={() => setSimMode({ kind: "PCT", pct: 80 })}
-      />
-      <span className="flex-1">
-        <strong>Porcentaje de ocupación</strong>
-        <span className="block text-xs text-slate-500">
-          Simula un llenado parcial del bulto.
-        </span>
-
-        {simMode.kind === "PCT" && (
-          <div className="mt-1 flex items-center gap-2">
+          <label className="flex items-center gap-2 text-sm">
             <input
-              type="number"
-              min={1}
-              max={100}
-              className="w-20 rounded-md border px-2 py-1 text-sm"
-              value={simMode.pct}
-              onChange={(e) =>
-                setSimMode({
-                  kind: "PCT",
-                  pct: Math.min(
-                    100,
-                    Math.max(1, Number(e.target.value) || 1)
-                  ),
-                })
-              }
+              type="radio"
+              checked={simMode.kind === "MAX"}
+              onChange={() => setSimMode({ kind: "MAX" })}
             />
-            <span className="text-xs text-slate-600">% de ocupación</span>
-          </div>
-        )}
-      </span>
-    </label>
-  </div>
-)}
+            <span>
+              <strong>Máxima ocupación</strong>
+              <span className="block text-xs text-slate-500">
+                Llena el bulto hasta su capacidad operativa máxima.
+              </span>
+            </span>
+          </label>
 
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              checked={simMode.kind === "PCT"}
+              onChange={() => setSimMode({ kind: "PCT", pct: 80 })}
+            />
+            <span className="flex-1">
+              <strong>Porcentaje de ocupación</strong>
+              <span className="block text-xs text-slate-500">
+                Simula un llenado parcial del bulto.
+              </span>
+
+              {simMode.kind === "PCT" && (
+                <div className="mt-1 flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    className="w-20 rounded-md border px-2 py-1 text-sm"
+                    value={simMode.pct}
+                    onChange={(e) =>
+                      setSimMode({
+                        kind: "PCT",
+                        pct: Math.min(
+                          100,
+                          Math.max(1, Number(e.target.value) || 1)
+                        ),
+                      })
+                    }
+                  />
+                  <span className="text-xs text-slate-600">% de ocupación</span>
+                </div>
+              )}
+            </span>
+          </label>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Tabla */}
