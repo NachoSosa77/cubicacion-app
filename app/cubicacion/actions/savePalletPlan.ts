@@ -1,3 +1,4 @@
+// src/app/cubicacion/actions/savePalletPlan.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
@@ -30,8 +31,8 @@ export async function savePalletPlan(params: {
   tipoContenedorId: number;
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
   objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
-  objetivoUnidades?: number;
-  objetivoOcupacion?: number;
+  objetivoUnidades?: number; // bultos objetivo (si modoSimulacion)
+  objetivoOcupacion?: number; // 0..1
   modoSimulacion?: boolean;
 }) {
   const {
@@ -45,14 +46,17 @@ export async function savePalletPlan(params: {
     modoSimulacion,
   } = params;
 
-  // 1) Cargar contenedor + lote
+  // 1) Cargar contenedor + lote (snake_case)
   const [contenedor, lote] = await Promise.all([
     prisma.tipoContenedor.findUnique({ where: { id: tipoContenedorId } }),
     prisma.cubicacionLote.findUnique({
       where: { id: loteId },
       include: {
-        bultoEmpresa: true,
-        items: { include: { tipoProducto: true } },
+        bulto_empresa: true,
+        items: {
+          include: { tipo_producto: true },
+          orderBy: { id: "asc" },
+        },
       },
     }),
   ]);
@@ -61,7 +65,7 @@ export async function savePalletPlan(params: {
   if (!lote) throw new Error("Lote inexistente.");
   if (!lote.items?.length) throw new Error("El lote no tiene ítems.");
 
-  // 2) Validar dimensiones del contenedor (tu schema permite null)
+  // 2) Validar dimensiones del contenedor
   const largoM = toNumber(contenedor.largo_mts, 0);
   const anchoM = toNumber(contenedor.ancho_mts, 0);
   const altoM = toNumber(contenedor.alto_mts, 0);
@@ -70,7 +74,7 @@ export async function savePalletPlan(params: {
   requirePositive(anchoM, "El contenedor no tiene ancho_mts válido.");
   requirePositive(altoM, "El contenedor no tiene alto_mts válido.");
 
-  // 3) Regla
+  // 3) Regla operativa
   const regla = await prisma.cubicacionRegla.findFirst({
     where: {
       empresaId,
@@ -81,39 +85,56 @@ export async function savePalletPlan(params: {
     orderBy: { id: "desc" },
   });
 
-  // 4) EMPRESA_BULTO debe existir
-  if (lote.tipo_bulto === "EMPRESA_BULTO" && !lote.bultoEmpresa) {
+  // 4) EMPRESA_BULTO debe tener relación
+  if (lote.tipo_bulto === "EMPRESA_BULTO" && !lote.bulto_empresa) {
     throw new Error(
-      "El lote es EMPRESA_BULTO pero no tiene bultoEmpresa asociado (bulto_empresa_id)."
+      "El lote es EMPRESA_BULTO pero no tiene bulto_empresa asociado (bulto_empresa_id)."
     );
   }
 
-  // 5) Items
-  const items = lote.items.map((it) => {
-    const tp = it.tipoProducto;
+  // 5) Items (snapshot-first para consistencia)
+  const items = lote.items.map((it, idx) => {
+    const tp = it.tipo_producto;
 
     const unidades = toNumber(it.cantidad_unidades, 0);
-    requirePositive(unidades, `Item ${tp.codigo}: cantidad_unidades inválida.`);
+    requirePositive(unidades, `Item ${idx + 1}: cantidad_unidades inválida.`);
 
-    const unidadesPorBulto = Math.max(
+    // ✅ snapshot: unidades_por_bulto
+    const unPorBultoSnapshot =
+      it.unidades_por_bulto != null && toNumber(it.unidades_por_bulto, 0) > 0
+        ? toNumber(it.unidades_por_bulto, 0)
+        : null;
+
+    const unPorBultoFallback = Math.max(
       1,
       toNumber(tp.unidad_entra_por_bulto, 1)
     );
-    const cantidadBultos = ceilDiv(unidades, unidadesPorBulto);
+
+    const unidadesPorBulto = unPorBultoSnapshot ?? unPorBultoFallback;
+
+    // ✅ snapshot: cantidad_bultos
+    const bultosSnapshot =
+      it.cantidad_bultos != null && toNumber(it.cantidad_bultos, 0) > 0
+        ? toNumber(it.cantidad_bultos, 0)
+        : 0;
+
+    const cantidadBultos =
+      bultosSnapshot > 0 ? bultosSnapshot : ceilDiv(unidades, unidadesPorBulto);
+
     requirePositive(
       cantidadBultos,
-      `Item ${tp.codigo}: no se pudo derivar cantidadBultos.`
+      `Item ${tp.codigo}: no se pudo determinar cantidad_bultos.`
     );
 
-    const codigo = String(tp.codigo ?? `PROD-${it.tipoProductoId}`).trim();
+    const codigo = String(tp.codigo ?? `PROD-${it.tipo_producto_id}`).trim();
     const descripcion = String(tp.descripcion ?? "");
 
     const dimBultoMm =
       lote.tipo_bulto === "EMPRESA_BULTO"
         ? {
-            largo: toNumber(lote.bultoEmpresa!.largo_mm, 0),
-            ancho: toNumber(lote.bultoEmpresa!.ancho_mm, 0),
-            alto: toNumber(lote.bultoEmpresa!.alto_mm, 0),
+            largo: toNumber(lote.bulto_empresa!.largo_mm, 0),
+            ancho: toNumber(lote.bulto_empresa!.ancho_mm, 0),
+            alto: toNumber(lote.bulto_empresa!.alto_mm, 0),
           }
         : {
             largo: toNumber(tp.largo_por_bulto, 0),
@@ -134,6 +155,7 @@ export async function savePalletPlan(params: {
       `El producto ${codigo} no tiene alto de bulto válido.`
     );
 
+    // Peso bulto: preferimos peso_por_bulto; si no, estimamos con snapshot peso_unidad_kg y unidadesPorBulto
     const pesoPorBulto =
       tp.peso_por_bulto != null ? toNumber(tp.peso_por_bulto, 0) : 0;
 
@@ -152,7 +174,7 @@ export async function savePalletPlan(params: {
         : Math.max(0, pesoUnidad) * unidadesPorBulto;
 
     return {
-      tipoProductoId: it.tipoProductoId,
+      tipoProductoId: it.tipo_producto_id,
       codigo,
       descripcion,
       cantidadBultos,
@@ -161,36 +183,12 @@ export async function savePalletPlan(params: {
     };
   });
 
-  // ✅ Consoles (save)
-  console.log("SAVE_PALLET :: LOTE", {
-    loteId: lote.id,
-    tipo_bulto: lote.tipo_bulto,
-    bulto_empresa_id: lote.bulto_empresa_id,
-    bultoEmpresa: lote.bultoEmpresa
-      ? {
-          id: lote.bultoEmpresa.id,
-          largo_mm: lote.bultoEmpresa.largo_mm,
-          ancho_mm: lote.bultoEmpresa.ancho_mm,
-          alto_mm: lote.bultoEmpresa.alto_mm,
-        }
-      : null,
-  });
-
-  console.log(
-    "SAVE_PALLET :: ITEMS",
-    items.map((x) => ({
-      codigo: x.codigo,
-      cantidadBultos: x.cantidadBultos,
-      dimBultoMm: x.dimBultoMm,
-      pesoBultoKg: x.pesoBultoKg,
-    }))
-  );
-
-  // 6) Calcular
+  // 6) Objetivos (solo valida rango)
   const parsedObjetivoUnidades =
     objetivoUnidades != null && toNumber(objetivoUnidades, 0) > 0
       ? toNumber(objetivoUnidades, 0)
       : undefined;
+
   const parsedObjetivoOcupacion =
     objetivoOcupacion != null ? Number(objetivoOcupacion) : undefined;
 
@@ -199,10 +197,11 @@ export async function savePalletPlan(params: {
     (parsedObjetivoOcupacion < 0 || parsedObjetivoOcupacion > 1)
   ) {
     throw new Error(
-      "El objetivo de ocupación debe ser un número entre 0 y 1 (por ejemplo, 0.85)."
+      "El objetivo de ocupación debe estar entre 0 y 1 (ej: 0.85)."
     );
   }
 
+  // 7) Calcular plan
   const plan = calcularPalletPlan({
     contenedor: {
       id: contenedor.id,
@@ -228,46 +227,24 @@ export async function savePalletPlan(params: {
     modoSimulacion,
   });
 
-  console.log("SAVE_PALLET :: PLAN resumen", {
-    palletsRequeridos: plan.palletsRequeridos,
-    cajasTotales: plan.pallet1.cajasTotales,
-    cajasPorCapa: plan.pallet1.cajasPorCapa,
-    capas: plan.pallet1.capas,
-    alturaTotalM: plan.pallet1.alturaTotalM,
-    pesoTotalKg: plan.pallet1.pesoTotalKg,
-    ocupacionBasePct: plan.pallet1.ocupacionBasePct,
-    ocupacionVolumenPct: plan.pallet1.ocupacionVolumenPct,
-    ocupacionLogradaPct: plan.pallet1.ocupacionLogradaPct,
-    unidadesColocadas: plan.pallet1.unidadesColocadas,
-    volumenLibreMm3: plan.pallet1.volumenLibreMm3,
-    warnings: plan.pallet1.warnings,
-    placementsCount: plan.pallet1.placements?.length ?? 0,
-    palletDimMm: plan.pallet1.palletDimMm,
-  });
-
-  // 7) Persistir (upsert)
+  // 8) Persistir (upsert por uq_lote_contenedor)
   const maxAlturaMm =
     regla?.maxAlturaM != null
       ? Math.round(Number(regla.maxAlturaM) * 1000)
       : null;
 
   const permitirMezclaFinal =
-    (regla?.permitirMezcla ?? true) && params.mixPolicy === "PERMITIR_MEZCLA";
-
-  console.log(
-    "SAVE_PALLET :: placements length",
-    plan.pallet1.placements?.length,
-    plan.pallet1.placements
-  );
+    (regla?.permitirMezcla ?? true) && mixPolicy === "PERMITIR_MEZCLA";
 
   const saved = await prisma.cubicacionPalletPlan.upsert({
     where: {
-      // @@unique([loteId, tipoContenedorId], map: "uq_lote_contenedor")
+      // @@unique([loteId, tipoContenedorId]) -> nombre real en tu client
       loteId_tipoContenedorId: { loteId, tipoContenedorId },
     },
     create: {
       loteId,
       tipoContenedorId,
+
       permitir_mezcla: permitirMezclaFinal,
       max_codigos_por_pallet: regla?.maxCodigosPorPallet ?? null,
       max_altura_mm: maxAlturaMm,

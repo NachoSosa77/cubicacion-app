@@ -95,7 +95,7 @@ export default async function Page({ params }: PageProps) {
 
   return (
     <div className="p-6">
-      <PalletClient lote={loteClient as any} contenedores={contenedoresClient as any} />
+      <PalletClient lote={loteClient as any} contenedores={contenedoresClient as any} empresaId={1} />
     </div>
   );
 }

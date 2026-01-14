@@ -3,6 +3,9 @@
 import { CubicacionPalletViewer3D } from "@/app/cubicacion/components/CubicacionPalletViewer3D";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
+
+// ✅ server actions: se importan acá (NO por props)
+import { guardarPalletPlan } from "../../actions/guardarPalletPlan";
 import { previewPalletPlan } from "../../actions/previewPalletPlan";
 
 /* =========================
@@ -64,7 +67,6 @@ type ClientLote = {
   id: number;
   descripcion?: string | null;
 
-  // ✅ NUEVO snapshot del lote (consistencia)
   unidades_totales: number;
   bultos_totales: number;
 
@@ -81,7 +83,6 @@ type ClientLote = {
     id: number;
     tipo_producto_id: number;
 
-    // snapshot
     cantidad_unidades: number;
     cantidad_bultos: number;
     unidades_por_bulto?: number | null;
@@ -96,7 +97,6 @@ type ClientLote = {
       codigo: string;
       descripcion: string;
 
-      // legacy (lo dejamos para mostrar info y fallback)
       unidad_entra_por_bulto: number;
       largo_por_bulto: number;
       ancho_por_bulto: number;
@@ -109,27 +109,9 @@ type MixPolicy = "NO_MEZCLAR" | "PERMITIR_MEZCLA";
 type Objective = "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
 
 interface Props {
+  empresaId: number;
   lote: ClientLote;
   contenedores: ClientContenedor[];
-
-  onPreview: (params: {
-    tipoContenedorId: number;
-    mixPolicy: MixPolicy;
-    objective: Objective;
-    objetivoUnidades?: number; // en UI lo usamos como "bultos deseados"
-    objetivoOcupacion?: number;
-    modoSimulacion?: boolean;
-  }) => Promise<{ plan: PalletPlanResult }>;
-
-  onGuardar: (params: {
-    tipoContenedorId: number;
-    mixPolicy: MixPolicy;
-    objective: Objective;
-    objetivoUnidades?: number;
-    objetivoOcupacion?: number;
-    modoSimulacion?: boolean;
-    plan: unknown;
-  }) => Promise<{ palletPlanId: number }>;
 }
 
 /* =========================
@@ -171,13 +153,13 @@ function tryDimMm(v: any): DimMm | null {
    Component
 ========================= */
 
-export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props) {
+export function PalletClient({ empresaId, lote, contenedores }: Props) {
   const router = useRouter();
   const [tipoContenedorId, setTipoContenedorId] = useState<number | "">("");
   const [mixPolicy, setMixPolicy] = useState<MixPolicy>("PERMITIR_MEZCLA");
   const [objective, setObjective] = useState<Objective>("OPERATIVO_ESTABLE");
   const [modoSimulacion, setModoSimulacion] = useState<boolean>(false);
-  const [objetivoUnidades, setObjetivoUnidades] = useState<string>(""); // "bultos deseados"
+  const [objetivoUnidades, setObjetivoUnidades] = useState<string>("");
   const [objetivoOcupacion, setObjetivoOcupacion] = useState<string>("");
 
   const [result, setResult] = useState<PalletPlanResult | null>(null);
@@ -192,7 +174,6 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
     return contenedores.find((c) => c.id === tipoContenedorId) ?? null;
   }, [tipoContenedorId, contenedores]);
 
-  // ✅ Ahora el resumen usa snapshot del lote item (consistencia)
   const loteResumen = useMemo(() => {
     return lote.items.map((it) => {
       const unPorBultoSnapshot =
@@ -200,13 +181,15 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
           ? Number(it.unidades_por_bulto)
           : null;
 
-      const unPorBultoFallback = safeNumber(it.tipo_producto.unidad_entra_por_bulto, 0);
+      const unPorBultoFallback = safeNumber(
+        it.tipo_producto.unidad_entra_por_bulto,
+        0
+      );
 
       const unPorBulto = unPorBultoSnapshot ?? unPorBultoFallback;
 
       const bultosSnapshot = safeNumber(it.cantidad_bultos, 0);
 
-      // ✅ preferimos snapshot; si falta, recién estimamos
       const bultosEstimados =
         bultosSnapshot > 0
           ? bultosSnapshot
@@ -244,7 +227,8 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
   }, [lote.items, lote.tipo_bulto]);
 
   const simulacionActiva =
-    modoSimulacion && (objetivoUnidades.trim() !== "" || objetivoOcupacion.trim() !== "");
+    modoSimulacion &&
+    (objetivoUnidades.trim() !== "" || objetivoOcupacion.trim() !== "");
 
   /* =========================
      Validación común
@@ -272,22 +256,33 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
       return null;
     }
 
-    const objetivoUnidadesNum = objetivoUnidades.trim() ? Number(objetivoUnidades) : undefined;
-    if (objetivoUnidadesNum !== undefined && !Number.isFinite(objetivoUnidadesNum)) {
+    const objetivoUnidadesNum = objetivoUnidades.trim()
+      ? Number(objetivoUnidades)
+      : undefined;
+    if (
+      objetivoUnidadesNum !== undefined &&
+      !Number.isFinite(objetivoUnidadesNum)
+    ) {
       setError("Indicá un número válido en bultos deseados.");
       return null;
     }
 
-    const objetivoOcupacionPct = objetivoOcupacion.trim() ? Number(objetivoOcupacion) : undefined;
+    const objetivoOcupacionPct = objetivoOcupacion.trim()
+      ? Number(objetivoOcupacion)
+      : undefined;
     if (
       objetivoOcupacionPct !== undefined &&
-      (!Number.isFinite(objetivoOcupacionPct) || objetivoOcupacionPct < 0 || objetivoOcupacionPct > 100)
+      (!Number.isFinite(objetivoOcupacionPct) ||
+        objetivoOcupacionPct < 0 ||
+        objetivoOcupacionPct > 100)
     ) {
       setError("El % de ocupación deseada debe estar entre 0 y 100.");
       return null;
     }
 
     return {
+      empresaId,
+      loteId: lote.id,
       tipoContenedorId: Number(tipoContenedorId),
       mixPolicy,
       objective,
@@ -297,7 +292,9 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
           ? objetivoUnidadesNum
           : undefined,
       objetivoOcupacion:
-        modoSimulacion && objetivoOcupacionPct !== undefined ? objetivoOcupacionPct / 100 : undefined,
+        modoSimulacion && objetivoOcupacionPct !== undefined
+          ? objetivoOcupacionPct / 100
+          : undefined,
     };
   };
 
@@ -313,7 +310,8 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
 
     startPreview(async () => {
       try {
-        const res = await previewPalletPlan(payload);
+        // ✅ FIX: usar form (no "payload")
+        const res = await previewPalletPlan(form);
         setResult(res.plan);
       } catch (e) {
         console.error(e);
@@ -333,7 +331,7 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
 
     startSave(async () => {
       try {
-        const res = await onGuardar({
+        const res = await guardarPalletPlan({
           ...form,
           plan: result,
         });
@@ -353,11 +351,18 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
 
     startPreview(async () => {
       try {
-        const offRes = await onPreview({ ...form, mixPolicy: "NO_MEZCLAR" });
-        const onRes = await onPreview({ ...form, mixPolicy: "PERMITIR_MEZCLA" });
+        const offRes = await previewPalletPlan({
+          ...form,
+          mixPolicy: "NO_MEZCLAR",
+        });
+        const onRes = await previewPalletPlan({
+          ...form,
+          mixPolicy: "PERMITIR_MEZCLA",
+        });
 
         const best =
-          (onRes.plan.pallet1.ocupacionLogradaPct ?? 0) >= (offRes.plan.pallet1.ocupacionLogradaPct ?? 0)
+          (onRes.plan.pallet1.ocupacionLogradaPct ?? 0) >=
+          (offRes.plan.pallet1.ocupacionLogradaPct ?? 0)
             ? onRes.plan
             : offRes.plan;
 
@@ -376,8 +381,12 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
   return (
     <section className="space-y-6 bg-white p-6 rounded-lg shadow-sm">
       <header className="space-y-1">
-        <h2 className="text-xl font-semibold text-slate-900">Cubicación en pallet</h2>
-        <p className="text-sm text-slate-600">Previsualizá el layout 3D y guardalo cuando estés conforme.</p>
+        <h2 className="text-xl font-semibold text-slate-900">
+          Cubicación en pallet
+        </h2>
+        <p className="text-sm text-slate-600">
+          Previsualizá el layout 3D y guardalo cuando estés conforme.
+        </p>
       </header>
 
       {/* Lote info (snapshot) */}
@@ -385,12 +394,15 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="font-semibold text-slate-800">Lote #{lote.id}</p>
-            {lote.descripcion && <p className="text-slate-600 mt-1">{lote.descripcion}</p>}
+            {lote.descripcion && (
+              <p className="text-slate-600 mt-1">{lote.descripcion}</p>
+            )}
           </div>
 
           <div className="text-xs text-slate-700">
             <span className="px-2 py-1 rounded-full bg-white border">
-              Snapshot: {safeNumber(lote.unidades_totales, 0)} un · {safeNumber(lote.bultos_totales, 0)} bultos
+              Snapshot: {safeNumber(lote.unidades_totales, 0)} un ·{" "}
+              {safeNumber(lote.bultos_totales, 0)} bultos
             </span>
           </div>
         </div>
@@ -411,10 +423,20 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
               ) : (
                 <span className="text-slate-500"> (sin datos de bulto)</span>
               )}
-              {it.dimUnidad ? <span className="text-slate-600"> · unidad {formatDimMm(it.dimUnidad)}</span> : null}
+              {it.dimUnidad ? (
+                <span className="text-slate-600">
+                  {" "}
+                  · unidad {formatDimMm(it.dimUnidad)}
+                </span>
+              ) : null}
               {" — "}
               {it.volumenTotalM3.toFixed(4)} m³
-              {!it.snapshotOk && <span className="text-amber-700"> · (faltan snapshots; puede variar)</span>}
+              {!it.snapshotOk && (
+                <span className="text-amber-700">
+                  {" "}
+                  · (faltan snapshots; puede variar)
+                </span>
+              )}
             </li>
           ))}
         </ul>
@@ -423,11 +445,17 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
       {/* Configuración */}
       <div className="grid gap-4 md:grid-cols-3">
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">Tipo de pallet / contenedor</label>
+          <label className="text-sm font-medium text-slate-700">
+            Tipo de pallet / contenedor
+          </label>
           <select
             className="w-full border rounded-md px-3 py-2 text-sm"
             value={tipoContenedorId}
-            onChange={(e) => setTipoContenedorId(e.target.value === "" ? "" : Number(e.target.value))}
+            onChange={(e) =>
+              setTipoContenedorId(
+                e.target.value === "" ? "" : Number(e.target.value)
+              )
+            }
           >
             <option value="">Seleccioná</option>
             {contenedores.map((c) => (
@@ -448,27 +476,36 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
                   : "incompletas"}
                 {" · "}
                 Peso máx:{" "}
-                {contenedorSeleccionado.peso_max_kg != null ? `${contenedorSeleccionado.peso_max_kg} kg` : "sin definir"}
+                {contenedorSeleccionado.peso_max_kg != null
+                  ? `${contenedorSeleccionado.peso_max_kg} kg`
+                  : "sin definir"}
               </p>
 
               {result?.pallet1?.referencias && (
                 <p className="text-slate-600">
-                  Altura física: {mmToM(result.pallet1.referencias.alturaFisicaMm)} m · Altura útil:{" "}
-                  {mmToM(result.pallet1.referencias.alturaUtilMm)} m · Altura usada:{" "}
-                  {mmToM(result.pallet1.referencias.alturaUsadaMm)} m
+                  Altura física:{" "}
+                  {mmToM(result.pallet1.referencias.alturaFisicaMm)} m · Altura
+                  útil: {mmToM(result.pallet1.referencias.alturaUtilMm)} m ·
+                  Altura usada: {mmToM(result.pallet1.referencias.alturaUsadaMm)}{" "}
+                  m
                 </p>
               )}
 
               {result?.pallet1?.referencias &&
-                result.pallet1.referencias.alturaUtilMm < result.pallet1.referencias.alturaFisicaMm && (
-                  <p className="text-slate-500">Nota: la altura útil puede limitarse por reglas operativas.</p>
+                result.pallet1.referencias.alturaUtilMm <
+                  result.pallet1.referencias.alturaFisicaMm && (
+                  <p className="text-slate-500">
+                    Nota: la altura útil puede limitarse por reglas operativas.
+                  </p>
                 )}
             </div>
           )}
         </div>
 
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">Mezcla de productos</label>
+          <label className="text-sm font-medium text-slate-700">
+            Mezcla de productos
+          </label>
           <select
             className="w-full border rounded-md px-3 py-2 text-sm"
             value={mixPolicy}
@@ -480,7 +517,9 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
         </div>
 
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">Objetivo de cubicación</label>
+          <label className="text-sm font-medium text-slate-700">
+            Objetivo de cubicación
+          </label>
           <select
             className="w-full border rounded-md px-3 py-2 text-sm"
             value={objective}
@@ -495,7 +534,9 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
 
       <div className="grid gap-4 md:grid-cols-3">
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">Modo simulación</label>
+          <label className="text-sm font-medium text-slate-700">
+            Modo simulación
+          </label>
           <div className="flex items-center gap-2">
             <input
               id="modo-simulacion"
@@ -508,11 +549,15 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
               Limitar por objetivo sin perder el cálculo máximo por defecto.
             </label>
           </div>
-          <p className="text-xs text-slate-500">Activá esta opción para simular un pallet parcial.</p>
+          <p className="text-xs text-slate-500">
+            Activá esta opción para simular un pallet parcial.
+          </p>
         </div>
 
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">Bultos deseados (objetivo)</label>
+          <label className="text-sm font-medium text-slate-700">
+            Bultos deseados (objetivo)
+          </label>
           <input
             type="number"
             min={0}
@@ -522,11 +567,15 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
             onChange={(e) => setObjetivoUnidades(e.target.value)}
             disabled={!modoSimulacion}
           />
-          <p className="text-xs text-slate-500">Detiene la colocación cuando se alcanza este número de bultos.</p>
+          <p className="text-xs text-slate-500">
+            Detiene la colocación cuando se alcanza este número de bultos.
+          </p>
         </div>
 
         <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">% ocupación deseada (0-100)</label>
+          <label className="text-sm font-medium text-slate-700">
+            % ocupación deseada (0-100)
+          </label>
           <input
             type="number"
             min={0}
@@ -538,7 +587,9 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
             onChange={(e) => setObjetivoOcupacion(e.target.value)}
             disabled={!modoSimulacion}
           />
-          <p className="text-xs text-slate-500">Se calcula sobre el volumen completo del pallet.</p>
+          <p className="text-xs text-slate-500">
+            Se calcula sobre el volumen completo del pallet.
+          </p>
         </div>
       </div>
 
@@ -574,26 +625,37 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
 
       {savedId != null && (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
-          Guardado OK. PalletPlan ID: <span className="font-semibold">{savedId}</span>
+          Guardado OK. PalletPlan ID:{" "}
+          <span className="font-semibold">{savedId}</span>
         </div>
       )}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 p-3 text-sm text-red-700 rounded-md">{error}</div>
+        <div className="bg-red-50 border border-red-200 p-3 text-sm text-red-700 rounded-md">
+          {error}
+        </div>
       )}
 
       {/* Resultado */}
       {result &&
         (() => {
           const capacidadTotal = Math.max(1, result.pallet1.cajasTotales);
-          const progresoUnidades = Math.min(100, (result.pallet1.unidadesColocadas / capacidadTotal) * 100);
-          const ocupacionLibrePct = Math.max(0, 100 - result.pallet1.ocupacionLogradaPct);
+          const progresoUnidades = Math.min(
+            100,
+            (result.pallet1.unidadesColocadas / capacidadTotal) * 100
+          );
+          const ocupacionLibrePct = Math.max(
+            0,
+            100 - result.pallet1.ocupacionLogradaPct
+          );
 
           return (
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-xs text-slate-600">
                 <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-700 border">
-                  {simulacionActiva ? "Simulación activada: usando objetivos opcionales" : "Modo estándar: calcula capacidad máxima"}
+                  {simulacionActiva
+                    ? "Simulación activada: usando objetivos opcionales"
+                    : "Modo estándar: calcula capacidad máxima"}
                 </span>
               </div>
 
@@ -601,67 +663,112 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
                 <div className="rounded-md border p-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <p className="text-slate-500">Bultos colocados</p>
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">Simulación</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
+                      Simulación
+                    </span>
                   </div>
-                  <p className="font-semibold text-lg">{result.pallet1.unidadesColocadas}</p>
-                  <p className="text-xs text-slate-500">Capacidad calculada: {result.pallet1.cajasTotales}</p>
+                  <p className="font-semibold text-lg">
+                    {result.pallet1.unidadesColocadas}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Capacidad calculada: {result.pallet1.cajasTotales}
+                  </p>
                   <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                    <div className="h-full bg-indigo-500" style={{ width: `${progresoUnidades}%` }} />
+                    <div
+                      className="h-full bg-indigo-500"
+                      style={{ width: `${progresoUnidades}%` }}
+                    />
                   </div>
                 </div>
 
                 <div className="rounded-md border p-3 space-y-2">
                   <p className="text-slate-500">Capas</p>
                   <p className="font-semibold text-lg">{result.pallet1.capas}</p>
-                  <p className="text-xs text-slate-500">{result.pallet1.cajasPorCapa} cajas por capa (máx.)</p>
+                  <p className="text-xs text-slate-500">
+                    {result.pallet1.cajasPorCapa} cajas por capa (máx.)
+                  </p>
                 </div>
 
                 <div className="rounded-md border p-3 space-y-2">
-                  <p className="text-slate-500">Ocupación volumen (altura usada)</p>
-                  <p className="font-semibold text-lg">{result.pallet1.ocupacionVolumenPct.toFixed(1)}%</p>
+                  <p className="text-slate-500">
+                    Ocupación volumen (altura usada)
+                  </p>
+                  <p className="font-semibold text-lg">
+                    {result.pallet1.ocupacionVolumenPct.toFixed(1)}%
+                  </p>
                   <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
                     <div
                       className="h-full bg-emerald-500"
-                      style={{ width: `${Math.min(100, result.pallet1.ocupacionVolumenPct)}%` }}
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          result.pallet1.ocupacionVolumenPct
+                        )}%`,
+                      }}
                     />
                   </div>
                 </div>
 
                 <div className="rounded-md border p-3 space-y-2">
                   <p className="text-slate-500">Ocupación total del pallet</p>
-                  <p className="font-semibold text-lg">{result.pallet1.ocupacionLogradaPct.toFixed(1)}%</p>
+                  <p className="font-semibold text-lg">
+                    {result.pallet1.ocupacionLogradaPct.toFixed(1)}%
+                  </p>
                   <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
                     <div
                       className="h-full bg-amber-500"
-                      style={{ width: `${Math.min(100, result.pallet1.ocupacionLogradaPct)}%` }}
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          result.pallet1.ocupacionLogradaPct
+                        )}%`,
+                      }}
                     />
                   </div>
-                  <p className="text-xs text-slate-500">Referencia: volumen completo del pallet.</p>
+                  <p className="text-xs text-slate-500">
+                    Referencia: volumen completo del pallet.
+                  </p>
                 </div>
 
                 <div className="rounded-md border p-3 space-y-2">
                   <p className="text-slate-500">Peso total</p>
-                  <p className="font-semibold text-lg">{result.pallet1.pesoTotalKg.toFixed(1)} kg</p>
-                  <p className="text-xs text-slate-500">Altura usada: {result.pallet1.alturaTotalM.toFixed(3)} m</p>
+                  <p className="font-semibold text-lg">
+                    {result.pallet1.pesoTotalKg.toFixed(1)} kg
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Altura usada: {result.pallet1.alturaTotalM.toFixed(3)} m
+                  </p>
                 </div>
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 text-sm">
                 <div className="rounded-md border p-3 space-y-2">
                   <p className="text-slate-500">Volumen libre estimado</p>
-                  <p className="font-semibold text-lg">{formatVolumenMm3ToM3(result.pallet1.volumenLibreMm3)}</p>
+                  <p className="font-semibold text-lg">
+                    {formatVolumenMm3ToM3(result.pallet1.volumenLibreMm3)}
+                  </p>
                   <p className="text-xs text-slate-500">
-                    Aproximadamente {ocupacionLibrePct.toFixed(1)}% del pallet queda disponible.
+                    Aproximadamente {ocupacionLibrePct.toFixed(1)}% del pallet
+                    queda disponible.
                   </p>
                   <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                    <div className="h-full bg-slate-400" style={{ width: `${Math.min(100, ocupacionLibrePct)}%` }} />
+                    <div
+                      className="h-full bg-slate-400"
+                      style={{ width: `${Math.min(100, ocupacionLibrePct)}%` }}
+                    />
                   </div>
                 </div>
 
                 <div className="rounded-md border p-3 space-y-2">
-                  <p className="text-slate-500">Pallets requeridos (estimación)</p>
-                  <p className="font-semibold text-lg">{result.palletsRequeridos}</p>
-                  <p className="text-xs text-slate-500">Estimación base; la simulación no altera la propuesta máxima.</p>
+                  <p className="text-slate-500">
+                    Pallets requeridos (estimación)
+                  </p>
+                  <p className="font-semibold text-lg">
+                    {result.palletsRequeridos}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Estimación base; la simulación no altera la propuesta máxima.
+                  </p>
                 </div>
               </div>
 
@@ -677,7 +784,9 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
               )}
 
               <div className="space-y-2">
-                <p className="text-sm font-medium text-slate-700">Previsualización 3D — Pallet #1</p>
+                <p className="text-sm font-medium text-slate-700">
+                  Previsualización 3D — Pallet #1
+                </p>
 
                 <CubicacionPalletViewer3D
                   palletDimMm={result.pallet1.palletDimMm}
@@ -685,7 +794,8 @@ export function PalletClient({ lote, contenedores, onPreview, onGuardar }: Props
                 />
 
                 <p className="text-xs text-slate-500">
-                  La visualización representa el layout calculado para el primer pallet.
+                  La visualización representa el layout calculado para el primer
+                  pallet.
                 </p>
               </div>
             </div>

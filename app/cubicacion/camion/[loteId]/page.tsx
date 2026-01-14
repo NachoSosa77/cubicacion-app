@@ -18,19 +18,25 @@ export default async function CamionPage({
 
   // Para esta vista no necesitamos items; traemos lo mínimo.
   const lote = await prisma.cubicacionLote.findUnique({
-    where: { id: loteId },
-    select: {
-      id: true,
-      empresaId: true,
-      descripcion: true,
-      tipo_bulto: true, // si existe en tu modelo; si NO existe, borrá esta línea
-    },
-  });
+  where: { id: loteId },
+  select: {
+    id: true,
+    empresa_id: true,
+    descripcion: true,
+    tipo_bulto: true,
+    unidades_totales: true,
+    bultos_totales: true,
+    packing_policy: true,
+    bulto_empresa_id: true,
+    created_at: true,
+    updated_at: true,
+  },
+})
 
   if (!lote) return <div className="p-6">Lote no encontrado.</div>;
 
   // Capturamos valores “seguros” fuera del closure
-  const empresaId = lote.empresaId;
+  const empresaId = lote.empresa_id;
   const loteIdSafe = lote.id;
 
   const transportes = await prisma.transporteClasificacion.findMany({
@@ -91,7 +97,7 @@ export default async function CamionPage({
   // Mapear a lo que espera CamionClient (tipoBulto opcional)
   const loteClient = {
     id: lote.id,
-    empresaId: lote.empresaId,
+    empresaId: lote.empresa_id,
     descripcion: lote.descripcion ?? null,
     // si tu campo real es tipo_bulto y querés mostrarlo:
     tipoBulto: (lote as any).tipo_bulto ?? undefined,

@@ -208,6 +208,7 @@ export async function previewPalletPlan(params: {
   );
 
   // 6) Objetivos
+  // 6) Objetivos
   const parsedObjetivoUnidades =
     objetivoUnidades != null && toNumber(objetivoUnidades, 0) > 0
       ? toNumber(objetivoUnidades, 0)
@@ -224,6 +225,38 @@ export async function previewPalletPlan(params: {
       "El objetivo de ocupación debe estar entre 0 y 1 (ej: 0.50)."
     );
   }
+
+  // ✅ LÍMITE DURO: bultos disponibles del lote (supply)
+  const bultosFromLote = toNumber(lote.bultos_totales, 0);
+  const bultosFromItems = items.reduce(
+    (acc, it) => acc + toNumber(it.cantidadBultos, 0),
+    0
+  );
+
+  const bultosDisponibles =
+    bultosFromLote > 0 ? bultosFromLote : bultosFromItems;
+
+  if (bultosDisponibles <= 0) {
+    throw new Error("No se pudo determinar bultosDisponibles del lote.");
+  }
+
+  // ✅ Objetivo efectivo: nunca puede superar el supply del lote
+  const objetivoUnidadesEfectivo = Math.min(
+    parsedObjetivoUnidades ?? bultosDisponibles,
+    bultosDisponibles
+  );
+
+  // ✅ Activamos modoSimulacion SOLO para aplicar el límite de supply
+  const modoSimulacionEfectivo = true;
+
+  console.log("PREVIEW_PALLET :: LIMITES", {
+    tipo_bulto: lote.tipo_bulto,
+    bultosFromLote,
+    bultosFromItems,
+    bultosDisponibles,
+    parsedObjetivoUnidades,
+    objetivoUnidadesEfectivo,
+  });
 
   // 7) Calcular plan
   const plan = calcularPalletPlan({
@@ -246,26 +279,9 @@ export async function previewPalletPlan(params: {
     mixPolicy,
     objective,
     items,
-    objetivoUnidades: parsedObjetivoUnidades,
+    objetivoUnidades: objetivoUnidadesEfectivo,
     objetivoOcupacion: parsedObjetivoOcupacion,
-    modoSimulacion,
-  });
-
-  console.log("PREVIEW_PALLET :: PLAN resumen", {
-    palletsRequeridos: plan.palletsRequeridos,
-    cajasTotales: plan.pallet1.cajasTotales,
-    cajasPorCapa: plan.pallet1.cajasPorCapa,
-    capas: plan.pallet1.capas,
-    alturaTotalM: plan.pallet1.alturaTotalM,
-    pesoTotalKg: plan.pallet1.pesoTotalKg,
-    ocupacionBasePct: plan.pallet1.ocupacionBasePct,
-    ocupacionVolumenPct: plan.pallet1.ocupacionVolumenPct,
-    ocupacionLogradaPct: plan.pallet1.ocupacionLogradaPct,
-    unidadesColocadas: plan.pallet1.unidadesColocadas,
-    volumenLibreMm3: plan.pallet1.volumenLibreMm3,
-    warnings: plan.pallet1.warnings,
-    placementsCount: plan.pallet1.placements?.length ?? 0,
-    palletDimMm: plan.pallet1.palletDimMm,
+    modoSimulacion: modoSimulacionEfectivo,
   });
 
   return { plan };

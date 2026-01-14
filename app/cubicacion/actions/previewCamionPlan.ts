@@ -89,7 +89,7 @@ export async function previewCamionPlan(params: {
 
   // 2) Pallet plans guardados del lote (campos reales)
   const palletPlans = await prisma.cubicacionPalletPlan.findMany({
-    where: { loteId },
+    where: { loteId: loteId },
     orderBy: { updatedAt: "desc" },
     select: {
       id: true,
@@ -116,6 +116,13 @@ export async function previewCamionPlan(params: {
       alturaUtilizadaMm: toNumber(p.altura_utilizada_mm, 0),
       pesoTotalKg: toNumber(p.peso_total_kg, 0),
     };
+  });
+
+  console.log("CAMION :: palletPlan elegido", {
+    id: palletPlans[0]?.id,
+    lote_id: loteId,
+    placementsLen: (palletPlans[0]?.layout as any)?.pallet1?.placements?.length,
+    palletDimMm: (palletPlans[0]?.layout as any)?.pallet1?.palletDimMm,
   });
 
   // 3) Base input para el algoritmo

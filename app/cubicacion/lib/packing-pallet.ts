@@ -22,7 +22,7 @@ export type PalletInput = {
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
   objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
 
-  objetivoUnidades?: number;
+  objetivoUnidades?: number; // bultos
   objetivoOcupacion?: number; // 0–1
   modoSimulacion?: boolean;
 
@@ -111,37 +111,6 @@ function gridCapacity(
   return { nx, nz, cap: nx * nz };
 }
 
-function buildGridPlacementsLayer(params: {
-  palletBase: { largo: number; ancho: number };
-  box: { largo: number; ancho: number; alto: number };
-  count: number;
-  capa: number;
-  yBase: number;
-}) {
-  const { nx, nz, cap } = gridCapacity(params.palletBase, params.box);
-  const take = Math.min(params.count, cap);
-  if (take <= 0) return [];
-
-  const startX = -params.palletBase.largo / 2 + params.box.largo / 2;
-  const startZ = -params.palletBase.ancho / 2 + params.box.ancho / 2;
-  const y = params.yBase + params.box.alto / 2;
-
-  const out: { x: number; y: number; z: number }[] = [];
-  let placed = 0;
-
-  for (let iz = 0; iz < nz && placed < take; iz++) {
-    for (let ix = 0; ix < nx && placed < take; ix++) {
-      out.push({
-        x: startX + ix * params.box.largo,
-        y,
-        z: startZ + iz * params.box.ancho,
-      });
-      placed++;
-    }
-  }
-  return out;
-}
-
 /* =========================
    Motor principal
 ========================= */
@@ -171,6 +140,7 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     .map((x) => ({ ...x }));
 
   const modoSimulacion = Boolean(input.modoSimulacion);
+
   const objetivoUnidades =
     modoSimulacion && input.objetivoUnidades != null
       ? Math.max(0, Math.floor(Number(input.objetivoUnidades)))
@@ -222,9 +192,10 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     let cajasEnEstaCapa = 0;
     const yBase = alturaUsadaMm;
 
-    const maxSlots = capBase.cap;
+    for (let slot = 0; slot < capBase.cap; slot++) {
+      // ✅ CORTE ESTRICTO POR OBJETIVO (ANTES DE COLOCAR)
+      if (objetivoUnidades != null && cajasTotales >= objetivoUnidades) break;
 
-    for (let slot = 0; slot < maxSlots; slot++) {
       const volumenRestante =
         volumenObjetivoMm3 != null
           ? volumenObjetivoMm3 - volumenColocadoMm3
@@ -260,6 +231,9 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
       cajasTotales += 1;
       pesoActualKg += base.pesoBultoKg;
       volumenColocadoMm3 += volumenMm3(base.dimBultoMm);
+
+      // ✅ CORTE ESTRICTO DESPUÉS DE COLOCAR
+      if (objetivoUnidades != null && cajasTotales >= objetivoUnidades) break;
 
       const acc = porProducto.get(base.tipoProductoId) ?? {
         bultos: 0,
