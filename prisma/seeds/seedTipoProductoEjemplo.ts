@@ -82,22 +82,21 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
   await prisma.tipoProducto.upsert({
     where: { codigo: "GALLETAS-TEST-CAJA12" },
     update: {
+      unidad_entra_por_bulto: 12, // <-- clave
       unidades_por_unidad_entrega: 12,
       largo_por_bulto: 400,
       ancho_por_bulto: 300,
       alto_por_bulto: 300,
       peso_por_bulto: "3.6",
-
-      // A2
       apilable: true,
       max_carga_superior_por_unidad_kg: "15.000",
       factor_seguridad_compresion: "0.850",
-
       updated_at: new Date(),
       updated_by: "seed",
     },
     create: {
       ...baseCreate,
+      unidad_entra_por_bulto: 12, // <-- clave
       codigo: "GALLETAS-TEST-CAJA12",
       descripcion: "Caja de galletas test x12",
       unidades_por_unidad_entrega: 12,
@@ -105,32 +104,29 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
       ancho_por_bulto: 300,
       alto_por_bulto: 300,
       peso_por_bulto: "3.6",
-
-      // A2 (override)
       max_carga_superior_por_unidad_kg: "15.000",
     },
   });
 
-  // 3) CAFE-TEST-CAJA6 (recomiendo ASCII en códigos)
+  // 3) CAFE-TEST-CAJA6
   await prisma.tipoProducto.upsert({
     where: { codigo: "CAFE-TEST-CAJA6" },
     update: {
+      unidad_entra_por_bulto: 6, // <-- clave
       unidades_por_unidad_entrega: 6,
       largo_por_bulto: 300,
       ancho_por_bulto: 250,
       alto_por_bulto: 260,
       peso_por_bulto: "4.2",
-
-      // A2 (más frágil)
       apilable: true,
       max_carga_superior_por_unidad_kg: "6.000",
       factor_seguridad_compresion: "0.850",
-
       updated_at: new Date(),
       updated_by: "seed",
     },
     create: {
       ...baseCreate,
+      unidad_entra_por_bulto: 6, // <-- clave
       codigo: "CAFE-TEST-CAJA6",
       descripcion: "Caja de café test x6 frascos",
       unidades_por_unidad_entrega: 6,
@@ -138,8 +134,6 @@ export async function seedTipoProductoEjemplo(prisma: PrismaClient) {
       ancho_por_bulto: 250,
       alto_por_bulto: 260,
       peso_por_bulto: "4.2",
-
-      // A2
       max_carga_superior_por_unidad_kg: "6.000",
     },
   });

@@ -37,6 +37,11 @@ export default async function Page({ params }: PageProps) {
     );
   }
 
+  // ✅ EmpresaId: idealmente viene del lote (si tu modelo lo tiene)
+  // Si tu modelo no tiene empresa_id, dejalo fijo en 1 por ahora.
+  const empresaId =
+    (lote.empresa_id as number | undefined) ?? 1;
+
   const contenedores = await prisma.tipoContenedor.findMany({
     where: { habilitado: true },
     orderBy: { descripcion: "asc" },
@@ -49,6 +54,29 @@ export default async function Page({ params }: PageProps) {
       alto_mts: true,
       peso_max_kg: true,
       peso_pallet_kg: true,
+    },
+  });
+
+  const empresaBultos = await prisma.empresaBulto.findMany({
+    where: {
+      empresa_id: empresaId,
+      habilitado: true,
+      deleted_at: null,
+    },
+    orderBy: [{ es_preferido: "desc" }, { codigo: "asc" }],
+    select: {
+      id: true,
+      empresa_id: true,
+      codigo: true,
+      descripcion: true,
+      largo_mm: true,
+      ancho_mm: true,
+      alto_mm: true,
+      espesor_pared_mm: true,
+      tara_kg: true,
+      max_peso_kg: true,
+      es_preferido: true,
+      habilitado: true,
     },
   });
 
@@ -96,9 +124,10 @@ export default async function Page({ params }: PageProps) {
   return (
     <div className="p-6">
       <SimulacionClient
-        empresaId={1}
+        empresaId={empresaId}
         lote={loteClient as any}
         contenedores={contenedoresClient as any}
+        empresaBultos={empresaBultos as any}
       />
     </div>
   );

@@ -3,6 +3,52 @@
 import { prisma } from "@/lib/prisma";
 import { calcularPalletPlan } from "../lib/packing-pallet";
 
+/* =========================
+   Types (server-safe)
+   (NO import desde BultoPanel: es client)
+========================= */
+
+type SourceTag =
+  | "SNAPSHOT"
+  | "CATALOGO"
+  | "MANUAL_GLOBAL"
+  | "MANUAL_SKU"
+  | "FALLBACK"
+  | "BULTO_EMPRESA";
+
+type DimMm = { largo: number; ancho: number; alto: number };
+
+type BultoSimSnapshot = {
+  candidateKey: "A" | "B" | "C";
+  titulo: string;
+  scope?: "LOTE" | "SKU";
+  warnings?: string[];
+  items: Array<{
+    tipo_producto_id: number;
+    codigo: string;
+    unidades_planificadas: number;
+    unidades_por_bulto: number;
+    cantidad_bultos: number;
+    sobrante_unidades: number;
+    dim_bulto_mm?: DimMm | null;
+    audit: {
+      sourceUnPorBulto: SourceTag;
+      sourceDims: SourceTag;
+      bultoEmpresaId?: number;
+      bultoEmpresaCodigo?: string;
+    };
+  }>;
+  totales: {
+    unidades: number;
+    bultos: number;
+    bultosParciales: number;
+  };
+};
+
+/* =========================
+   Helpers
+========================= */
+
 function toNumber(v: unknown, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -18,15 +64,28 @@ function ceilDiv(a: number, b: number) {
   return Math.ceil(a / b);
 }
 
+function isValidDimMm(d: { largo: number; ancho: number; alto: number }) {
+  return d.largo > 0 && d.ancho > 0 && d.alto > 0;
+}
+
+/* =========================
+   Main
+========================= */
+
 export async function previewPalletPlan(params: {
   empresaId: number;
   loteId: number;
   tipoContenedorId: number;
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
   objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
+
+  // legacy (tu UI actual)
   objetivoUnidades?: number; // bultos objetivo (según tu UI)
   objetivoOcupacion?: number; // 0..1 (tu UI ya lo manda /100)
   modoSimulacion?: boolean;
+
+  // NUEVO (V2): viene de SimulacionClient cuando aplicás el bulto
+  bultoSnapshot?: BultoSimSnapshot;
 }) {
   const {
     empresaId,
@@ -37,6 +96,7 @@ export async function previewPalletPlan(params: {
     objetivoUnidades,
     objetivoOcupacion,
     modoSimulacion,
+    bultoSnapshot,
   } = params;
 
   // 1) Cargar contenedor + lote (snake_case)
@@ -45,9 +105,9 @@ export async function previewPalletPlan(params: {
     prisma.cubicacionLote.findUnique({
       where: { id: loteId },
       include: {
-        bulto_empresa: true, // ✅ snake_case
+        bulto_empresa: true,
         items: {
-          include: { tipo_producto: true }, // ✅ snake_case
+          include: { tipo_producto: true },
           orderBy: { id: "asc" },
         },
       },
@@ -67,7 +127,7 @@ export async function previewPalletPlan(params: {
   requirePositive(anchoM, "El contenedor no tiene ancho_mts válido.");
   requirePositive(altoM, "El contenedor no tiene alto_mts válido.");
 
-  // 3) Regla operativa (ejemplo actual: por empresa+contenedor, genérica de producto/transporte)
+  // 3) Regla operativa (ejemplo actual)
   const regla = await prisma.cubicacionRegla.findFirst({
     where: {
       empresaId,
@@ -78,58 +138,116 @@ export async function previewPalletPlan(params: {
     orderBy: { id: "desc" },
   });
 
-  // 4) Si lote EMPRESA_BULTO, debe existir la relación
-  if (lote.tipo_bulto === "EMPRESA_BULTO" && !lote.bulto_empresa) {
-    throw new Error(
-      "El lote es EMPRESA_BULTO pero no tiene bulto_empresa asociado (bulto_empresa_id)."
-    );
+  // 4) Resolver bulto empresa efectivo (si el snapshot eligió otro bulto)
+  let bultoEmpresaEf = lote.bulto_empresa ?? null;
+
+  const snapBultoId =
+    bultoSnapshot?.items?.find((x) => x.audit?.bultoEmpresaId)?.audit
+      ?.bultoEmpresaId ?? null;
+
+  if (lote.tipo_bulto === "EMPRESA_BULTO") {
+    if (snapBultoId && (!bultoEmpresaEf || bultoEmpresaEf.id !== snapBultoId)) {
+      const b = await prisma.empresaBulto.findFirst({
+        where: {
+          id: snapBultoId,
+          empresa_id: empresaId,
+          habilitado: true,
+          deleted_at: null,
+        },
+      });
+      if (!b) {
+        throw new Error(
+          `Snapshot eligió empresa_bulto_id=${snapBultoId} pero no existe / no está habilitado para empresa ${empresaId}.`
+        );
+      }
+      bultoEmpresaEf = b as any;
+    }
+
+    if (!bultoEmpresaEf) {
+      throw new Error(
+        "El lote es EMPRESA_BULTO pero no tiene bulto_empresa asociado (bulto_empresa_id) y el snapshot no proveyó uno válido."
+      );
+    }
   }
 
-  // 5) Armado de items para el cálculo desde snapshot del lote
+  // 5) Map snapshot por tipo_producto_id (si viene)
+  const snapByTipoProd = new Map<number, BultoSimSnapshot["items"][number]>();
+  if (bultoSnapshot?.items?.length) {
+    for (const s of bultoSnapshot.items)
+      snapByTipoProd.set(s.tipo_producto_id, s);
+  }
+
+  // 6) Armado de items para el cálculo
   const items = lote.items.map((it) => {
     const tp = it.tipo_producto;
-
-    const unidades = toNumber(it.cantidad_unidades, 0);
-    requirePositive(unidades, `Item ${tp.codigo}: cantidad_unidades inválida.`);
-
-    // ✅ snapshot (si existe) para consistencia
-    const unidadesPorBultoSnapshot =
-      it.unidades_por_bulto != null && toNumber(it.unidades_por_bulto, 0) > 0
-        ? toNumber(it.unidades_por_bulto, 0)
-        : null;
-
-    const unidadesPorBultoFallback = Math.max(
-      1,
-      toNumber(tp.unidad_entra_por_bulto, 1)
-    );
-
-    const unidadesPorBulto =
-      unidadesPorBultoSnapshot ?? unidadesPorBultoFallback;
-
-    const cantidadBultosSnapshot =
-      it.cantidad_bultos != null && toNumber(it.cantidad_bultos, 0) > 0
-        ? toNumber(it.cantidad_bultos, 0)
-        : 0;
-
-    const cantidadBultos =
-      cantidadBultosSnapshot > 0
-        ? cantidadBultosSnapshot
-        : ceilDiv(unidades, unidadesPorBulto);
-
-    requirePositive(
-      cantidadBultos,
-      `Item ${tp.codigo}: no se pudo determinar cantidad_bultos.`
-    );
-
     const codigo = String(tp.codigo ?? `PROD-${it.tipo_producto_id}`).trim();
     const descripcion = String(tp.descripcion ?? "");
 
+    // =========================
+    // DEMANDA (unidades)
+    // - si hay snapshot aplicado, usamos unidades_planificadas
+    // - sino, usamos cantidad_unidades del lote
+    // =========================
+    const snap = snapByTipoProd.get(it.tipo_producto_id) ?? null;
+
+    const unidades = snap
+      ? toNumber(snap.unidades_planificadas, 0)
+      : toNumber(it.cantidad_unidades, 0);
+
+    requirePositive(unidades, `Item ${codigo}: cantidad_unidades inválida.`);
+
+    // =========================
+    // PACKAGING (unidades por bulto + bultos)
+    // - si hay snapshot aplicado, usamos unidades_por_bulto y cantidad_bultos
+    // - sino, usamos snapshot DB (it.unidades_por_bulto / it.cantidad_bultos)
+    //   y fallback a catálogo
+    // =========================
+    let unidadesPorBulto: number;
+    let cantidadBultos: number;
+
+    if (snap) {
+      unidadesPorBulto = Math.max(1, toNumber(snap.unidades_por_bulto, 1));
+      cantidadBultos = Math.max(1, toNumber(snap.cantidad_bultos, 1));
+    } else {
+      const unidadesPorBultoSnapshot =
+        it.unidades_por_bulto != null && toNumber(it.unidades_por_bulto, 0) > 0
+          ? toNumber(it.unidades_por_bulto, 0)
+          : null;
+
+      const unidadesPorBultoFallback = Math.max(
+        1,
+        toNumber(tp.unidad_entra_por_bulto, 1)
+      );
+
+      unidadesPorBulto = unidadesPorBultoSnapshot ?? unidadesPorBultoFallback;
+
+      const cantidadBultosSnapshot =
+        it.cantidad_bultos != null && toNumber(it.cantidad_bultos, 0) > 0
+          ? toNumber(it.cantidad_bultos, 0)
+          : 0;
+
+      cantidadBultos =
+        cantidadBultosSnapshot > 0
+          ? cantidadBultosSnapshot
+          : ceilDiv(unidades, unidadesPorBulto);
+
+      requirePositive(
+        cantidadBultos,
+        `Item ${codigo}: no se pudo determinar cantidad_bultos.`
+      );
+    }
+
+    // =========================
+    // DIM BULT0
+    // - EMPRESA_BULTO: del bulto empresa efectivo (snapshot puede cambiar bulto)
+    // - PRODUCTO_ESTANDAR: del catálogo del producto
+    // =========================
     const dimBultoMm =
       lote.tipo_bulto === "EMPRESA_BULTO"
         ? {
-            largo: toNumber(lote.bulto_empresa!.largo_mm, 0),
-            ancho: toNumber(lote.bulto_empresa!.ancho_mm, 0),
-            alto: toNumber(lote.bulto_empresa!.alto_mm, 0),
+            largo: toNumber((bultoEmpresaEf as any)!.largo_mm, 0),
+            ancho: toNumber((bultoEmpresaEf as any)!.ancho_mm, 0),
+            alto: toNumber((bultoEmpresaEf as any)!.alto_mm, 0),
           }
         : {
             largo: toNumber(tp.largo_por_bulto, 0),
@@ -137,18 +255,11 @@ export async function previewPalletPlan(params: {
             alto: toNumber(tp.alto_por_bulto, 0),
           };
 
-    requirePositive(
-      dimBultoMm.largo,
-      `El producto ${codigo} no tiene largo de bulto válido.`
-    );
-    requirePositive(
-      dimBultoMm.ancho,
-      `El producto ${codigo} no tiene ancho de bulto válido.`
-    );
-    requirePositive(
-      dimBultoMm.alto,
-      `El producto ${codigo} no tiene alto de bulto válido.`
-    );
+    if (!isValidDimMm(dimBultoMm)) {
+      throw new Error(
+        `El producto ${codigo} no tiene dimensiones de bulto válidas.`
+      );
+    }
 
     // Peso bulto: preferimos peso_por_bulto; si no, estimamos desde peso unidad * unidadesPorBulto
     const pesoPorBulto =
@@ -169,7 +280,7 @@ export async function previewPalletPlan(params: {
         : Math.max(0, pesoUnidad) * unidadesPorBulto;
 
     return {
-      tipoProductoId: it.tipo_producto_id, // ✅ ojo: el motor espera tipoProductoId
+      tipoProductoId: it.tipo_producto_id,
       codigo,
       descripcion,
       cantidadBultos,
@@ -178,37 +289,7 @@ export async function previewPalletPlan(params: {
     };
   });
 
-  // ✅ Consoles (preview)
-  console.log("PREVIEW_PALLET :: LOTE", {
-    loteId: lote.id,
-    tipo_bulto: lote.tipo_bulto,
-    bulto_empresa_id: lote.bulto_empresa_id,
-    bulto_empresa: lote.bulto_empresa
-      ? {
-          id: lote.bulto_empresa.id,
-          largo_mm: lote.bulto_empresa.largo_mm,
-          ancho_mm: lote.bulto_empresa.ancho_mm,
-          alto_mm: lote.bulto_empresa.alto_mm,
-        }
-      : null,
-    snapshot: {
-      unidades_totales: lote.unidades_totales,
-      bultos_totales: lote.bultos_totales,
-    },
-  });
-
-  console.log(
-    "PREVIEW_PALLET :: ITEMS",
-    items.map((x) => ({
-      codigo: x.codigo,
-      cantidadBultos: x.cantidadBultos,
-      dimBultoMm: x.dimBultoMm,
-      pesoBultoKg: x.pesoBultoKg,
-    }))
-  );
-
-  // 6) Objetivos
-  // 6) Objetivos
+  // 7) Objetivos (legacy)
   const parsedObjetivoUnidades =
     objetivoUnidades != null && toNumber(objetivoUnidades, 0) > 0
       ? toNumber(objetivoUnidades, 0)
@@ -226,39 +307,74 @@ export async function previewPalletPlan(params: {
     );
   }
 
-  // ✅ LÍMITE DURO: bultos disponibles del lote (supply)
-  const bultosFromLote = toNumber(lote.bultos_totales, 0);
+  // 8) Supply de bultos: para V2 tomamos el supply del snapshot aplicado (items)
+  // (si no hay snapshot, queda igual que antes: sumatoria por items; lote.bultos_totales puede ser viejo)
   const bultosFromItems = items.reduce(
     (acc, it) => acc + toNumber(it.cantidadBultos, 0),
     0
   );
+  const bultosFromLote = toNumber(lote.bultos_totales, 0);
 
+  // Preferimos items (porque representa lo que vamos a colocar), y dejamos lote como fallback.
   const bultosDisponibles =
-    bultosFromLote > 0 ? bultosFromLote : bultosFromItems;
+    bultosFromItems > 0 ? bultosFromItems : bultosFromLote;
 
   if (bultosDisponibles <= 0) {
     throw new Error("No se pudo determinar bultosDisponibles del lote.");
   }
 
-  // ✅ Objetivo efectivo: nunca puede superar el supply del lote
+  // Objetivo efectivo: nunca puede superar el supply
   const objetivoUnidadesEfectivo = Math.min(
     parsedObjetivoUnidades ?? bultosDisponibles,
     bultosDisponibles
   );
 
-  // ✅ Activamos modoSimulacion SOLO para aplicar el límite de supply
-  const modoSimulacionEfectivo = true;
+  // Modo simulación efectivo:
+  // - si tu UI lo manda, lo respetamos
+  // - si NO lo manda, igual lo activamos para aplicar límite duro de supply (lo que venís usando)
+  const modoSimulacionEfectivo = modoSimulacion ?? true;
 
-  console.log("PREVIEW_PALLET :: LIMITES", {
+  // ✅ Consoles (preview)
+  console.log("PREVIEW_PALLET :: LOTE", {
+    loteId: lote.id,
     tipo_bulto: lote.tipo_bulto,
-    bultosFromLote,
-    bultosFromItems,
-    bultosDisponibles,
-    parsedObjetivoUnidades,
-    objetivoUnidadesEfectivo,
+    bulto_empresa_id: lote.bulto_empresa_id,
+    bulto_empresa_ef: bultoEmpresaEf
+      ? {
+          id: (bultoEmpresaEf as any).id,
+          codigo: (bultoEmpresaEf as any).codigo,
+          largo_mm: (bultoEmpresaEf as any).largo_mm,
+          ancho_mm: (bultoEmpresaEf as any).ancho_mm,
+          alto_mm: (bultoEmpresaEf as any).alto_mm,
+        }
+      : null,
+    snapshot_aplicado: bultoSnapshot
+      ? {
+          candidateKey: bultoSnapshot.candidateKey,
+          titulo: bultoSnapshot.titulo,
+          totales: bultoSnapshot.totales,
+        }
+      : null,
+    supply: {
+      bultosFromItems,
+      bultosFromLote,
+      bultosDisponibles,
+      parsedObjetivoUnidades,
+      objetivoUnidadesEfectivo,
+    },
   });
 
-  // 7) Calcular plan
+  console.log(
+    "PREVIEW_PALLET :: ITEMS",
+    items.map((x) => ({
+      codigo: x.codigo,
+      cantidadBultos: x.cantidadBultos,
+      dimBultoMm: x.dimBultoMm,
+      pesoBultoKg: x.pesoBultoKg,
+    }))
+  );
+
+  // 9) Calcular plan
   const plan = calcularPalletPlan({
     contenedor: {
       id: contenedor.id,
@@ -279,9 +395,14 @@ export async function previewPalletPlan(params: {
     mixPolicy,
     objective,
     items,
+
+    // objetivos + modo simulación (limitador de supply)
     objetivoUnidades: objetivoUnidadesEfectivo,
     objetivoOcupacion: parsedObjetivoOcupacion,
     modoSimulacion: modoSimulacionEfectivo,
+
+    // (opcional) referencias para debugging: si tu motor ya lo devuelve, genial.
+    // Si no, no pasa nada.
   });
 
   return { plan };

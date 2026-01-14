@@ -70,6 +70,6 @@ rm -rf node_modules/.prisma
 rm -rf prisma/migrations
 npx prisma migrate dev --name init
 npx prisma generate
-npx prisma db seed
+npm run seed
 npm run lint -- --fix
 npm run dev
