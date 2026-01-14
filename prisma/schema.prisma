@@ -7,6 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum CandidateKey {
+  A
+  B
+  C
+}
+
 enum OrientacionForzada {
   LARGO
   ANCHO
@@ -748,7 +754,9 @@ model CubicacionPalletPlan {
   lote           CubicacionLote @relation(fields: [loteId], references: [id], onDelete: Cascade)
   tipoContenedor TipoContenedor @relation(fields: [tipoContenedorId], references: [id])
 
-  @@unique([loteId, tipoContenedorId], map: "uq_lote_contenedor")
+  candidate_key CandidateKey @default(A)
+
+  @@unique([loteId, tipoContenedorId, candidate_key], map: "uq_lote_contenedor_candidate")
   @@index([loteId], map: "idx_pallet_plan_lote")
   @@map("cubicacion_pallet_plan")
 }

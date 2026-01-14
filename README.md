@@ -66,3 +66,10 @@ Como la base de datos depende de migraciones Prisma, no es necesario crear carpe
 
 > Tip: No borres tablas ni uses `prisma db push` en lugar de migraciones. Siempre trabaja con el flujo de `migrate` para mantener el historial consistente.
 
+rm -rf node_modules/.prisma
+rm -rf prisma/migrations
+npx prisma migrate dev --name init
+npx prisma generate
+npx prisma db seed
+npm run lint -- --fix
+npm run dev
