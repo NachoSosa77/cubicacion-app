@@ -43,12 +43,44 @@ function clamp01(n: number) {
   return Math.max(0, Math.min(1, n));
 }
 
+// =========================
+// Compat helpers (NO rompe legacy)
+// =========================
+type DimMm = { largo: number; ancho: number; alto: number };
+type PosMm = { x: number; y: number; z: number };
+
+type PlacementCompat = {
+  tipo_producto_id?: number;
+  productoId?: number;
+  codigo?: string;
+  dim_unidad_mm?: DimMm;
+  dimUnidadMm?: DimMm;
+  positionMm?: PosMm;
+};
+
+function getPlacements(data: CubicacionBulto3DInput): PlacementCompat[] {
+  const p = (data as any).placements;
+  return Array.isArray(p) ? (p as PlacementCompat[]) : [];
+}
+
+function getPidFromPlacement(p: PlacementCompat) {
+  const n = Number(p.tipo_producto_id ?? p.productoId ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getDimFromPlacement(p: PlacementCompat): DimMm | null {
+  return (p.dim_unidad_mm ?? p.dimUnidadMm ?? null) as any;
+}
+
 export function CubicacionBultoViewer3D({
   data,
   gapFactor = 0.98,
   visualGapMm = 1.5,
 }: Props) {
   const { bulto, contenido } = data;
+
+  // ✅ NUEVO: placements (si existe en el flujo nuevo)
+  const placements = useMemo(() => getPlacements(data), [data]);
 
   const bultoSizeM = useMemo(() => {
     return {
@@ -58,46 +90,81 @@ export function CubicacionBultoViewer3D({
     };
   }, [bulto.dimInternaMm]);
 
-  const hasPositions = contenido.some((c) => !!c.positionMm);
+  // ✅ NUEVO: detecta layout en placements primero; si no, usa contenido (legacy)
+  const hasPositionsPlacements = placements.some((p) => !!p.positionMm);
+  const hasPositionsContenido = contenido.some((c) => !!c.positionMm);
+  const sourceMode: "PLACEMENTS" | "CONTENIDO" | "NONE" = hasPositionsPlacements
+    ? "PLACEMENTS"
+    : hasPositionsContenido
+    ? "CONTENIDO"
+    : "NONE";
+
+  const hasPositions = sourceMode !== "NONE";
 
   const [mode, setMode] = useState<ViewerMode>("OPERATIVO");
 
   const legend = useMemo(() => {
     const map = new Map<number, { codigo: string; count: number; color: string }>();
 
-    for (const it of contenido) {
-      const pid = it.productoId;
-      const reps = Math.max(1, Math.floor(it.unidades ?? 1));
-      const codigo = String(it.codigo ?? `PROD-${pid}`).trim() || `PROD-${pid}`;
+    // Preferimos la semántica del contenido (legacy) si está
+    if (contenido?.length) {
+      for (const it of contenido) {
+        const pid = it.productoId;
+        const reps = Math.max(1, Math.floor(it.unidades ?? 1));
+        const codigo = String(it.codigo ?? `PROD-${pid}`).trim() || `PROD-${pid}`;
 
-      const prev = map.get(pid);
-      if (!prev) map.set(pid, { codigo, count: reps, color: colorForProducto(pid) });
-      else prev.count += reps;
+        const prev = map.get(pid);
+        if (!prev) map.set(pid, { codigo, count: reps, color: colorForProducto(pid) });
+        else prev.count += reps;
+      }
+    } else if (placements.length) {
+      // placements suele venir “1 por unidad”
+      for (const p of placements) {
+        const pid = getPidFromPlacement(p);
+        const codigo = String(p.codigo ?? `PROD-${pid}`).trim() || `PROD-${pid}`;
+
+        const prev = map.get(pid);
+        if (!prev) map.set(pid, { codigo, count: 1, color: colorForProducto(pid) });
+        else prev.count += 1;
+      }
     }
 
     return Array.from(map.entries())
       .map(([productoId, v]) => ({ productoId, ...v }))
       .sort((a, b) => a.codigo.localeCompare(b.codigo));
-  }, [contenido]);
+  }, [contenido, placements]);
 
   const capas = useMemo(() => {
     if (!hasPositions) return [];
-    const ys = contenido
-      .map((c) => c.positionMm?.y)
-      .filter((y): y is number => typeof y === "number")
-      .map((y) => roundKey(y / 1000));
+
+    const ys =
+      sourceMode === "PLACEMENTS"
+        ? placements
+            .map((p) => p.positionMm?.y)
+            .filter((y): y is number => typeof y === "number")
+            .map((y) => roundKey(y / 1000))
+        : contenido
+            .map((c) => c.positionMm?.y)
+            .filter((y): y is number => typeof y === "number")
+            .map((y) => roundKey(y / 1000));
+
     return Array.from(new Set(ys)).sort((a, b) => a - b);
-  }, [contenido, hasPositions]);
+  }, [placements, contenido, hasPositions, sourceMode]);
 
   const [capaSeleccionada, setCapaSeleccionada] = useState<number | null>(null);
 
   const totalUnidadesDibujadas = useMemo(() => {
     if (!hasPositions) return 0;
+
+    // placements: 1 placement = 1 unidad (lo más común)
+    if (sourceMode === "PLACEMENTS") return placements.length;
+
+    // legacy
     return contenido.reduce(
       (acc, it) => acc + Math.max(1, Math.floor(it.unidades ?? 1)),
       0
     );
-  }, [contenido, hasPositions]);
+  }, [contenido, hasPositions, sourceMode, placements.length]);
 
   const sizeWithVisualGap = (mm: number) => {
     const scaled = mm * gapFactor;
@@ -185,6 +252,18 @@ export function CubicacionBultoViewer3D({
                 </button>
               </div>
             </div>
+
+            {/* ✅ Debug: te dice qué fuente está usando */}
+            <div className="text-[11px] text-slate-500">
+              Fuente:{" "}
+              <span className="font-medium">
+                {sourceMode === "PLACEMENTS"
+                  ? `placements (${placements.length})`
+                  : sourceMode === "CONTENIDO"
+                  ? `contenido (${contenido.length})`
+                  : "sin layout"}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -232,7 +311,10 @@ export function CubicacionBultoViewer3D({
       </div>
 
       <div className="h-105 w-full">
-        <Canvas camera={{ position: [1.25, 1.15, 1.25], fov: 45 }} shadows={mode === "OPERATIVO"}>
+        <Canvas
+          camera={{ position: [1.25, 1.15, 1.25], fov: 45 }}
+          shadows={mode === "OPERATIVO"}
+        >
           <ambientLight intensity={0.9} />
           <directionalLight
             position={[3, 4, 3]}
@@ -281,7 +363,7 @@ export function CubicacionBultoViewer3D({
               />
             </mesh>
 
-            {/* Bulto (CLAVE: depthWrite=false para no “tapar” contenido) */}
+            {/* Bulto */}
             <mesh renderOrder={1} frustumCulled={false}>
               <boxGeometry args={[bultoSizeM.x, bultoSizeM.y, bultoSizeM.z]} />
               <meshStandardMaterial
@@ -290,41 +372,38 @@ export function CubicacionBultoViewer3D({
                 opacity={bultoOpacity}
                 depthWrite={false}
               />
-              <Edges
-                color="#334155"
-                opacity={bultoEdgesOpacity}
-                transparent
-              />
+              <Edges color="#334155" opacity={bultoEdgesOpacity} transparent />
             </mesh>
 
-            {/* Contenido: SIEMPRE visible (sin ocultarse por cámara) */}
+            {/* Contenido */}
             {hasPositions ? (
-              contenido.map((item, idx) => {
-                const pid = item.productoId;
-                const color = colorForProducto(pid);
+              sourceMode === "PLACEMENTS" ? (
+                placements.map((p, idx) => {
+                  const pid = getPidFromPlacement(p);
+                  const color = colorForProducto(pid);
 
-                const sizeM = {
-                  x: sizeWithVisualGap(item.dimUnidadMm.largo),
-                  y: sizeWithVisualGap(item.dimUnidadMm.alto),
-                  z: sizeWithVisualGap(item.dimUnidadMm.ancho),
-                };
+                  const dim = getDimFromPlacement(p);
+                  const pos = p.positionMm;
 
-                const reps = Math.max(1, Math.floor(item.unidades ?? 1));
-                const pos = item.positionMm!;
+                  if (!dim || !pos) return null;
 
-                const yKey = roundKey(pos.y / 1000);
-                const focusAlpha =
-                  mode === "TECNICO" && capaSeleccionada !== null
-                    ? yKey === capaSeleccionada
-                      ? 1
-                      : 0.18
-                    : 1;
+                  const sizeM = {
+                    x: sizeWithVisualGap(dim.largo),
+                    y: sizeWithVisualGap(dim.alto),
+                    z: sizeWithVisualGap(dim.ancho),
+                  };
 
-                const cubes: JSX.Element[] = [];
-                for (let i = 0; i < reps; i++) {
-                  cubes.push(
+                  const yKey = roundKey(pos.y / 1000);
+                  const focusAlpha =
+                    mode === "TECNICO" && capaSeleccionada !== null
+                      ? yKey === capaSeleccionada
+                        ? 1
+                        : 0.18
+                      : 1;
+
+                  return (
                     <mesh
-                      key={`${pid}-${idx}-${i}`}
+                      key={`${pid}-${idx}`}
                       renderOrder={2}
                       frustumCulled={false}
                       position={[pos.x / 1000, pos.y / 1000, pos.z / 1000]}
@@ -346,10 +425,60 @@ export function CubicacionBultoViewer3D({
                       />
                     </mesh>
                   );
-                }
+                })
+              ) : (
+                contenido.map((item, idx) => {
+                  const pid = item.productoId;
+                  const color = colorForProducto(pid);
 
-                return <group key={`${pid}-${idx}`}>{cubes}</group>;
-              })
+                  const sizeM = {
+                    x: sizeWithVisualGap(item.dimUnidadMm.largo),
+                    y: sizeWithVisualGap(item.dimUnidadMm.alto),
+                    z: sizeWithVisualGap(item.dimUnidadMm.ancho),
+                  };
+
+                  const reps = Math.max(1, Math.floor(item.unidades ?? 1));
+                  const pos = item.positionMm!;
+
+                  const yKey = roundKey(pos.y / 1000);
+                  const focusAlpha =
+                    mode === "TECNICO" && capaSeleccionada !== null
+                      ? yKey === capaSeleccionada
+                        ? 1
+                        : 0.18
+                      : 1;
+
+                  const cubes: JSX.Element[] = [];
+                  for (let i = 0; i < reps; i++) {
+                    cubes.push(
+                      <mesh
+                        key={`${pid}-${idx}-${i}`}
+                        renderOrder={2}
+                        frustumCulled={false}
+                        position={[pos.x / 1000, pos.y / 1000, pos.z / 1000]}
+                        castShadow={mode === "OPERATIVO"}
+                        receiveShadow={mode === "OPERATIVO"}
+                      >
+                        <boxGeometry args={[sizeM.x, sizeM.y, sizeM.z]} />
+                        <meshStandardMaterial
+                          color={color}
+                          transparent
+                          opacity={clamp01(cubeOpacityBase * focusAlpha)}
+                          roughness={mode === "OPERATIVO" ? 0.65 : 0.75}
+                          metalness={0}
+                        />
+                        <Edges
+                          color="#0f172a"
+                          opacity={clamp01(cubeEdgesOpacity * focusAlpha)}
+                          transparent
+                        />
+                      </mesh>
+                    );
+                  }
+
+                  return <group key={`${pid}-${idx}`}>{cubes}</group>;
+                })
+              )
             ) : (
               <group />
             )}

@@ -92,3 +92,32 @@ Permite explicar:
 
 ## Frase corta para clientes
 > “El Panel de Bulto permite simular y elegir la unidad logística base antes de optimizar pallets y transporte.”
+
+
+1) “Bulto global”
+
+Es un default para todo el lote (para todos los SKU).
+
+Si el usuario quiere probar “¿qué pasa si usamos CAJA-40x30x25 para todo?”, lo cambia una sola vez.
+
+En tu snapshot C, eso alimenta bultoEmpresaIdGlobal.
+
+2) “Bulto empresa (SKU)”
+
+Es una excepción por producto.
+
+Si un SKU necesita un bulto distinto (fragilidad, densidad, forma, marketing, etc.), lo cambiás solo para ese SKU.
+
+En tu snapshot C, eso alimenta bultoEmpresaIdBySku[tipo_producto_id].
+
+Regla de prioridad (la importante)
+
+Para cada SKU, el bulto efectivo se elige así:
+
+Si el SKU tiene selección propia → gana el bulto del SKU
+
+Si no, se usa el bulto global → gana el global
+
+Si tampoco hay global, cae al preferido / primero → fallback
+
+En la UI, cuando te dice “Activo: CAJA-40x30x25” debajo del selector SKU, significa “este es el que realmente se está usando para ese SKU” según esa prioridad.

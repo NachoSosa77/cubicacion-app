@@ -30,7 +30,7 @@ export default async function CubicacionPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <MultiProductoConfigurator
         productos={toPlain(productos)}
         bultosEmpresa={toPlain(bultosEmpresa)}

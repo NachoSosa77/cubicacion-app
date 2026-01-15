@@ -2,6 +2,30 @@ export type SourceTag = "SNAPSHOT" | "CATALOGO" | "BULTO_EMPRESA" | "FALLBACK";
 
 export type DimMm = { largo: number; ancho: number; alto: number };
 
+export type BultoLayout3DPlacement = {
+  tipo_producto_id: number;
+  codigo: string;
+  dim_unidad_mm: DimMm;
+  positionMm: { x: number; y: number; z: number }; // centro
+  capa: number;
+};
+
+export type BultoLayout3D = {
+  bulto: {
+    dimInternaMm: DimMm;
+  };
+  contenido: Array<{
+    productoId: number;
+    codigo: string;
+    unidades: number;
+    dimUnidadMm: DimMm;
+    positionMm?: { x: number; y: number; z: number }; // centro
+    capa?: number;
+  }>;
+  placements: BultoLayout3DPlacement[];
+  warnings: string[];
+};
+
 export type BultoSimSnapshotItem = {
   tipo_producto_id: number;
   codigo: string;
@@ -29,4 +53,5 @@ export type BultoSimSnapshot = {
     bultos: number;
     bultosParciales: number;
   };
+  layout3d?: BultoLayout3D;
 };

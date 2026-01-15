@@ -121,6 +121,8 @@ export function SimulacionClient({
     };
   }, [lote, bultoSnap]);
 
+  console.log("empresaBultos:", empresaBultos?.length, empresaBultos?.map(b => b.codigo));
+
   return (
     <section className="bg-slate-50/40">
       {/* Container */}
