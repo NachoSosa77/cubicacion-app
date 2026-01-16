@@ -122,13 +122,44 @@ export default async function Page({ params }: PageProps) {
   }));
 
   return (
-    <div className="p-6">
-      <SimulacionClient
-        empresaId={empresaId}
-        lote={loteClient as any}
-        contenedores={contenedoresClient as any}
-        empresaBultos={empresaBultos as any}
-      />
+  <div className="min-h-screen bg-slate-50">
+    <div className="mx-auto max-w-6xl p-6 space-y-4">
+      {/* Header de pantalla */}
+      <header className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold text-slate-900">
+            Simulación de cubicación
+          </h1>
+          <p className="mt-1 text-sm text-slate-600">
+            Lote #{lote.id}
+            {lote.descripcion ? ` · ${lote.descripcion}` : ""}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+          <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
+            Tipo bulto: {lote.tipo_bulto}
+          </span>
+          <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
+            Ítems: {lote.items.length}
+          </span>
+          <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
+            Empresa: {empresaId}
+          </span>
+        </div>
+      </header>
+
+      {/* Contenido principal */}
+      <main className="rounded-2xl border bg-white p-4 shadow-sm">
+        <SimulacionClient
+          empresaId={empresaId}
+          lote={loteClient as any}
+          contenedores={contenedoresClient as any}
+          empresaBultos={empresaBultos as any}
+        />
+      </main>
     </div>
-  );
+  </div>
+);
+
 }

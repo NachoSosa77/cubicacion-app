@@ -87,6 +87,7 @@ export function SimulacionClient({
   empresaBultos: EmpresaBulto[];
 }) {
   const [bultoSnap, setBultoSnap] = useState<BultoSimSnapshot | null>(null);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [palletPlanId, setPalletPlanId] = useState<number | null>(null);
 
   const loteForPallet = useMemo(() => {
@@ -121,7 +122,22 @@ export function SimulacionClient({
     };
   }, [lote, bultoSnap]);
 
-  console.log("empresaBultos:", empresaBultos?.length, empresaBultos?.map(b => b.codigo));
+  const hasBulto = !!bultoSnap;
+  const hasPallet = palletPlanId != null;
+
+  // Si querés ser estricto: el pallet solo “habilitado” si hay bulto aplicado.
+  // (Hoy tu Pallet funciona igual; esto es UX, no lógica.)
+  const palletEnabled = hasBulto;
+  const camionEnabled = hasPallet;
+
+  const canGoPallet = hasBulto; // opcional: si querés bloquear
+  const canGoCamion = hasPallet; // opcional: si querés bloquear
+
+  console.log(
+    "empresaBultos:",
+    empresaBultos?.length,
+    empresaBultos?.map((b) => b.codigo)
+  );
 
   return (
     <section className="bg-slate-50/40">
@@ -164,23 +180,168 @@ export function SimulacionClient({
             </div>
           </header>
 
-          {/* Panels */}
-          <div
-            className="
-    grid gap-5
-    lg:grid-cols-10
-    items-start
-            "
-          >
-            {/* Panel 1 */}
-            <aside className="lg:col-span-4 xl:col-span-4">
-              <div className="rounded-2xl border bg-white p-4 shadow-sm lg:sticky lg:top-5">
+          <div className="rounded-2xl border bg-white p-4 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-slate-600">
+                  Estado del workflow
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <span className="rounded-full border bg-white px-2.5 py-1 text-xs text-slate-700">
+                    1) Bulto:{" "}
+                    <span
+                      className={
+                        hasBulto
+                          ? "text-emerald-700 font-medium"
+                          : "text-slate-600"
+                      }
+                    >
+                      {hasBulto ? "Aplicado" : "Pendiente"}
+                    </span>
+                  </span>
+
+                  <span className="rounded-full border bg-white px-2.5 py-1 text-xs text-slate-700">
+                    2) Pallet:{" "}
+                    <span
+                      className={
+                        hasPallet
+                          ? "text-emerald-700 font-medium"
+                          : palletEnabled
+                          ? "text-indigo-700 font-medium"
+                          : "text-slate-600"
+                      }
+                    >
+                      {hasPallet
+                        ? `Guardado #${palletPlanId}`
+                        : palletEnabled
+                        ? "Listo para calcular"
+                        : "Bloqueado"}
+                    </span>
+                  </span>
+
+                  <span className="rounded-full border bg-white px-2.5 py-1 text-xs text-slate-700">
+                    3) Camión:{" "}
+                    <span
+                      className={
+                        camionEnabled
+                          ? "text-indigo-700 font-medium"
+                          : "text-slate-600"
+                      }
+                    >
+                      {camionEnabled ? "Listo para planificar" : "Pendiente"}
+                    </span>
+                  </span>
+                </div>
+
+                {hasBulto && (
+                  <p className="text-[11px] text-slate-500">
+                    Escenario activo:{" "}
+                    <span className="font-medium text-slate-700">
+                      {bultoSnap.titulo}
+                    </span>
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-md border bg-white text-slate-900 hover:bg-slate-50 text-sm disabled:opacity-50"
+                  disabled={!palletEnabled}
+                  onClick={() => {
+                    // UX: scroll al panel 2 si querés (opcional)
+                    document
+                      .getElementById("panel-pallet")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}
+                >
+                  Ir a Pallet
+                </button>
+
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 text-sm disabled:opacity-50"
+                  disabled={!camionEnabled}
+                  onClick={() => {
+                    document
+                      .getElementById("panel-camion")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}
+                >
+                  Ir a Camión
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Step selector */}
+          <div className="rounded-2xl border bg-white p-2 shadow-sm">
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setStep(1)}
+                className={[
+                  "rounded-xl px-3 py-2 text-sm border transition text-left",
+                  step === 1
+                    ? "bg-indigo-50 border-indigo-200 text-indigo-900"
+                    : "bg-white border-slate-200 hover:bg-slate-50",
+                ].join(" ")}
+              >
+                <div className="text-xs text-slate-600">Paso 1</div>
+                <div className="font-semibold">Bulto</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setStep(2)}
+                disabled={!canGoPallet}
+                className={[
+                  "rounded-xl px-3 py-2 text-sm border transition text-left disabled:opacity-50",
+                  step === 2
+                    ? "bg-indigo-50 border-indigo-200 text-indigo-900"
+                    : "bg-white border-slate-200 hover:bg-slate-50",
+                ].join(" ")}
+              >
+                <div className="text-xs text-slate-600">Paso 2</div>
+                <div className="font-semibold">Pallet</div>
+                <div className="text-[11px] text-slate-500">
+                  {hasBulto ? "Listo para calcular" : "Requiere bulto aplicado"}
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setStep(3)}
+                disabled={!canGoCamion}
+                className={[
+                  "rounded-xl px-3 py-2 text-sm border transition text-left disabled:opacity-50",
+                  step === 3
+                    ? "bg-indigo-50 border-indigo-200 text-indigo-900"
+                    : "bg-white border-slate-200 hover:bg-slate-50",
+                ].join(" ")}
+              >
+                <div className="text-xs text-slate-600">Paso 3</div>
+                <div className="font-semibold">Camión</div>
+                <div className="text-[11px] text-slate-500">
+                  {hasPallet
+                    ? "Listo para planificar"
+                    : "Requiere pallet guardado"}
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Panel activo (a ancho completo) */}
+          <div className="rounded-2xl border bg-white shadow-sm">
+            {step === 1 && (
+              <div className="p-4 md:p-5">
                 <BultoPanel
                   lote={lote}
                   empresaBultos={empresaBultos}
                   onApply={(snap) => {
                     setBultoSnap(snap);
-                    console.log("BULTO SNAP APLICADO:", snap);
+                    // UX: al aplicar bulto, saltar a Pallet
+                    setStep(2);
                   }}
                 />
 
@@ -191,57 +352,50 @@ export function SimulacionClient({
                   </div>
                 )}
               </div>
-            </aside>
+            )}
 
-            {/* Panel 2 */}
-            <main className="lg:col-span-6 xl:col-span-6">
-              <div className="rounded-2xl border bg-white shadow-sm">
-                <div className="border-b p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h2 className="text-base font-semibold text-slate-900">
-                        2) Pallet
-                      </h2>
-                      <p className="mt-1 text-xs text-slate-500">
-                        Panel activo (reusa el cálculo actual).
-                      </p>
-                    </div>
-                    <span className="text-[11px] px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
-                      Activo
-                    </span>
+            {step === 2 && (
+              <div className="p-4 md:p-5">
+                <div className="mb-3 flex items-start justify-between gap-2">
+                  <div>
+                    <h2 className="text-base font-semibold text-slate-900">
+                      2) Pallet
+                    </h2>
                   </div>
                 </div>
 
-                {/* Más aire para el componente grande */}
-                <div className="p-4 lg:p-5">
-                  <PalletClientV2
-                    empresaId={empresaId}
-                    lote={loteForPallet as any}
-                    contenedores={contenedores as any}
-                    bultoSnap={bultoSnap} // ✅
-                    onSaved={(id: number) => setPalletPlanId(id)}
-                  />
-                </div>
-              </div>
-            </main>
+                <PalletClientV2
+                  empresaId={empresaId}
+                  lote={loteForPallet as any}
+                  contenedores={contenedores as any}
+                  bultoSnap={bultoSnap}
+                  onSaved={(id: number) => {
+                    setPalletPlanId(id);
+                    // UX: al guardar pallet, saltar a Camión
+                    setStep(3);
+                  }}
+                />
 
-            {palletPlanId != null && (
-              <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
-                PalletPlan guardado:{" "}
-                <span className="font-semibold">#{palletPlanId}</span>
+                {palletPlanId != null && (
+                  <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+                    PalletPlan guardado:{" "}
+                    <span className="font-semibold">#{palletPlanId}</span>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Panel 3 */}
-            <aside className="lg:col-span-10 xl:col-span-10">
-              <div className="rounded-2xl border bg-white p-4 shadow-sm xl:sticky xl:top-5">
+            {step === 3 && (
+              <div className="p-4 md:p-5">
+                {/* Manteniendo tu placeholder, pero ahora a ancho completo */}
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <h2 className="text-base font-semibold text-slate-900">
                       3) Camión
                     </h2>
                     <p className="mt-1 text-xs text-slate-500">
-                      (Placeholder) Luego: A/B/C por strategy + selector.
+                      Próximo: evaluar transporte y proponer camiones
+                      requeridos.
                     </p>
                   </div>
                   <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border">
@@ -262,39 +416,9 @@ export function SimulacionClient({
                   >
                     Abrir camión (flujo actual)
                   </a>
-
-                  <p className="mt-3 text-xs text-slate-500">
-                    En V2 esto se integrará en el mismo workflow.
-                  </p>
-                </div>
-
-                <div className="mt-4">
-                  <p className="text-xs font-medium text-slate-600 mb-2">
-                    Estado
-                  </p>
-                  <div className="rounded-lg border p-3 text-xs text-slate-700 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span>Bulto</span>
-                      <span className="px-2 py-0.5 rounded-full border bg-white">
-                        Pendiente
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Pallet</span>
-                      <span className="px-2 py-0.5 rounded-full border bg-white">
-                        Disponible
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Camión</span>
-                      <span className="px-2 py-0.5 rounded-full border bg-white">
-                        Pendiente
-                      </span>
-                    </div>
-                  </div>
                 </div>
               </div>
-            </aside>
+            )}
           </div>
         </div>
       </div>

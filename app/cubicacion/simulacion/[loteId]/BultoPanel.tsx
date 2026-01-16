@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BultoViewerFromSnapshot } from "../../components/BultoViewerFromSnapshot";
 import { previewBultoLayout3D } from "../actions/previewBultoLayout3D";
-import { BultoSimSnapshot } from "../types/types";
+import { BultoLayout3D, BultoSimSnapshot } from "../types/types";
 
 type DimMm = { largo: number; ancho: number; alto: number };
 
@@ -172,9 +172,12 @@ export function BultoPanel({
   const [bultoEmpresaIdGlobal, setBultoEmpresaIdGlobal] = useState<number | "">(
     defaultEmpresaBultoId ?? ""
   );
-
+  const [appliedSnap, setAppliedSnap] = useState<BultoSimSnapshot | null>(null);
   const [layoutLoading, setLayoutLoading] = useState(false);
   const [layoutError, setLayoutError] = useState<string | null>(null);
+
+  const [draftLayout, setDraftLayout] = useState<BultoLayout3D | null>(null);
+  const [draftKey, setDraftKey] = useState<"A" | "B" | "C" | null>(null);
 
   // override por SKU (Avanzado)
   const [bultoEmpresaIdBySku, setBultoEmpresaIdBySku] = useState<
@@ -272,7 +275,7 @@ export function BultoPanel({
       (a, x) =>
         a +
         (x.unidades_por_bulto > 0 &&
-        x.unidades_planificadas % x.unidades_por_bulto !== 0
+          x.unidades_planificadas % x.unidades_por_bulto !== 0
           ? 1
           : 0),
       0
@@ -280,7 +283,7 @@ export function BultoPanel({
 
     return {
       candidateKey: "A",
-      titulo: "A · Snapshot actual del lote",
+      titulo: "A · Selección actual.",
       scope: "SKU",
       items,
       warnings,
@@ -332,7 +335,7 @@ export function BultoPanel({
 
     return {
       candidateKey: "B",
-      titulo: "B · Catálogo (un/bulto + dims estándar)",
+      titulo: "B · Cálculo estándar por catálogo.",
       scope: "SKU",
       items,
       warnings,
@@ -343,7 +346,7 @@ export function BultoPanel({
           (a, x) =>
             a +
             (x.unidades_por_bulto > 0 &&
-            x.unidades_planificadas % x.unidades_por_bulto !== 0
+              x.unidades_planificadas % x.unidades_por_bulto !== 0
               ? 1
               : 0),
           0
@@ -459,7 +462,7 @@ export function BultoPanel({
       (a, x) =>
         a +
         (x.unidades_por_bulto > 0 &&
-        x.unidades_planificadas % x.unidades_por_bulto !== 0
+          x.unidades_planificadas % x.unidades_por_bulto !== 0
           ? 1
           : 0),
       0
@@ -467,7 +470,7 @@ export function BultoPanel({
 
     return {
       candidateKey: "C",
-      titulo: "C · Operativo (demanda editable + bulto empresa)",
+      titulo: "C · Cálculo operativo editable.",
       scope: "SKU",
       items,
       warnings,
@@ -504,6 +507,8 @@ export function BultoPanel({
     });
   };
 
+  const canApply = draftKey === selected && !!draftLayout?.placements?.length;
+
   // =========================
   // Visor 3D
   // =========================
@@ -516,6 +521,8 @@ export function BultoPanel({
       })),
     [lote.items]
   );
+
+  const hasMultiSku = skuOptions.length > 1;
 
   const [viewerSkuId, setViewerSkuId] = useState<number>(
     () => skuOptions[0]?.tipo_producto_id ?? 0
@@ -540,394 +547,498 @@ export function BultoPanel({
     return it ? tryDimUnidad(it) : null;
   }, [loteItemBySku, activeItemForViewer]);
 
+  const layoutForViewer =
+    draftKey === selected && draftLayout
+      ? draftLayout
+      : appliedSnap?.layout3d ?? null;
+
+  const showWarnings = active.warnings?.length > 0;
+  const hasLayout = !!layoutForViewer?.placements?.length;
+
+  const clearLayouts = () => {
+    setDraftLayout(null);
+    setDraftKey(null);
+  };
+
+  // 1) Si cambio de candidato A/B/C, el layout previo ya no es válido
+  useEffect(() => {
+    clearLayouts();
+    // Nota: no borro appliedSnap, porque es una "confirmación" del usuario.
+  }, [selected]);
+
+  // 2) Si cambio el bulto empresa (global o por SKU), invalido el layout (solo afecta la preview)
+  useEffect(() => {
+    clearLayouts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bultoEmpresaIdGlobal, bultoEmpresaIdBySku]);
+
+  // 3) Si edito demanda en C, invalido el layout (porque cambia el escenario)
+  useEffect(() => {
+    if (selected !== "C") return;
+    clearLayouts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, planUnitsBySku]);
+
+  // 4) Mantener viewerSkuId válido si cambia el lote/items
+  useEffect(() => {
+    if (!skuOptions.length) return;
+    const exists = skuOptions.some((s) => s.tipo_producto_id === viewerSkuId);
+    if (!exists) setViewerSkuId(skuOptions[0].tipo_producto_id);
+  }, [skuOptions, viewerSkuId]);
+
   // =========================
   // Render
   // =========================
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <h2 className="text-base font-semibold text-slate-900">1) Bulto</h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Definí el bulto base (A/B/C). Este snapshot alimenta Pallet y
-            Camión.
-          </p>
+    <div className="grid gap-4 lg:grid-cols-12">
+      {/* Columna izquierda: Config */}
+      <div className="lg:col-span-5 space-y-4">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">1) Bulto</h2>
+          </div>
+          <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border">
+            V2
+          </span>
         </div>
-        <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border">
-          V2
-        </span>
-      </div>
 
-      <div className="flex flex-wrap gap-2">
-        {pill(`Tipo bulto: ${lote.tipo_bulto}`)}
-        {pill(`Lote #${lote.id}`)}
-        {pill(`${lote.items.length} productos`)}
-      </div>
-
-      {/* Selector A/B/C */}
-      <div className="space-y-2">
-        <label className="text-xs font-medium text-slate-600">Candidatos</label>
-
-        <div className="grid gap-2">
-          {(["A", "B", "C"] as const).map((k) => {
-            const snap =
-              k === "A" ? candidateA : k === "B" ? candidateB : candidateC;
-            const isActive = selected === k;
-
-            return (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setSelected(k)}
-                className={[
-                  "w-full text-left rounded-lg border p-3 transition",
-                  isActive
-                    ? "border-indigo-300 bg-indigo-50"
-                    : "border-slate-200 bg-white hover:bg-slate-50",
-                ].join(" ")}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">
-                      {snap.titulo}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-600">
-                      Totales: {snap.totales.unidades} un ·{" "}
-                      {snap.totales.bultos} bultos
-                      {snap.totales.bultosParciales > 0 ? (
-                        <span className="text-amber-700">
-                          {" "}
-                          · {snap.totales.bultosParciales} parciales
-                        </span>
-                      ) : null}
-                    </p>
-                  </div>
-
-                  <span
-                    className={[
-                      "text-[11px] px-2 py-0.5 rounded-full border",
-                      isActive
-                        ? "bg-white border-indigo-200 text-indigo-700"
-                        : "bg-white border-slate-200 text-slate-700",
-                    ].join(" ")}
-                  >
-                    {isActive ? "Seleccionado" : "Elegir"}
-                  </span>
-                </div>
-              </button>
-            );
-          })}
+        <div className="flex flex-wrap gap-2">
+          {pill(`Tipo bulto: ${lote.tipo_bulto}`)}
+          {pill(`Lote #${lote.id}`)}
+          {pill(`${lote.items.length} productos`)}
         </div>
-      </div>
 
-      {/* Config operativa C */}
-      {selected === "C" && (
-        <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
-          <p className="text-xs font-medium text-slate-700">Operativo (C)</p>
+        {/* Selector A/B/C */}
+        <div className="space-y-2">
+          <label className="text-xs font-medium text-slate-600">
+            Opciones de cubicación.
+          </label>
 
-          {/* Bulto global (siempre disponible si hay empresaBultos) */}
-          {empresaBultos.length > 0 && (
-            <div className="rounded-md border bg-white p-3 space-y-2">
-              <p className="text-xs font-medium text-slate-700">
-                Bulto empresa (simulación) — define dimensiones del bulto
-              </p>
+          <div className="grid gap-2">
+            {(["A", "B", "C"] as const).map((k) => {
+              const snap =
+                k === "A" ? candidateA : k === "B" ? candidateB : candidateC;
+              const isActive = selected === k;
 
-              <div className="space-y-1">
-                <label className="text-[11px] text-slate-600">
-                  Bulto global
-                </label>
-                <select
-                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
-                  value={bultoEmpresaIdGlobal}
-                  onChange={(e) =>
-                    setBultoEmpresaIdGlobal(
-                      e.target.value === "" ? "" : Number(e.target.value)
-                    )
-                  }
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setSelected(k)}
+                  className={[
+                    "w-full text-left rounded-lg border p-3 transition",
+                    isActive
+                      ? "border-indigo-300 bg-indigo-50"
+                      : "border-slate-200 bg-white hover:bg-slate-50",
+                  ].join(" ")}
                 >
-                  <option value="">(sin seleccionar)</option>
-                  {empresaBultos.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.codigo} — {b.largo_mm}×{b.ancho_mm}×{b.alto_mm} mm
-                      {b.es_preferido ? " (preferido)" : ""}
-                    </option>
-                  ))}
-                </select>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">
+                        {snap.titulo}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        Totales: {snap.totales.unidades} un ·{" "}
+                        {snap.totales.bultos} bultos
+                        {snap.totales.bultosParciales > 0 ? (
+                          <span className="text-amber-700">
+                            {" "}
+                            · {snap.totales.bultosParciales} Bultos parciales
+                          </span>
+                        ) : null}
+                      </p>
+                    </div>
 
-                <p className="text-[11px] text-slate-500">
-                  Si elegís un bulto acá (o por SKU), en C se usan sus dims
-                  aunque el lote sea PRODUCTO_ESTANDAR. El un/bulto se deriva
-                  con dim_unidad_mm si existe; si falta, cae a catálogo.
+                    <span
+                      className={[
+                        "text-[11px] px-2 py-0.5 rounded-full border",
+                        isActive
+                          ? "bg-white border-indigo-200 text-indigo-700"
+                          : "bg-white border-slate-200 text-slate-700",
+                      ].join(" ")}
+                    >
+                      {isActive ? "Seleccionado" : "Elegir"}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Config operativa C */}
+        {selected === "C" && (
+          <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
+            <p className="text-xs font-medium text-slate-700">Operativo (C)</p>
+
+            {/* Bulto global (siempre disponible si hay empresaBultos) */}
+            {empresaBultos.length > 0 && (
+              <div className="rounded-md border bg-white p-3 space-y-2">
+                <p className="text-xs font-medium text-slate-700">
+                  Bulto empresa (simulación) — define dimensiones del bulto
                 </p>
 
-                <button
-                  type="button"
-                  onClick={() => setShowAdvanced((v) => !v)}
-                  className="mt-2 inline-flex w-full justify-center px-3 py-2 rounded-md border bg-white text-slate-900 hover:bg-slate-50 text-sm"
-                >
-                  {showAdvanced ? "Ocultar avanzado" : "Avanzado"}
-                </button>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-slate-600">
+                    Bulto global
+                  </label>
+                  <select
+                    className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                    value={bultoEmpresaIdGlobal}
+                    onChange={(e) =>
+                      setBultoEmpresaIdGlobal(
+                        e.target.value === "" ? "" : Number(e.target.value)
+                      )
+                    }
+                  >
+                    <option value="">(sin seleccionar)</option>
+                    {empresaBultos.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.codigo} — {b.largo_mm}×{b.ancho_mm}×{b.alto_mm} mm
+                        {b.es_preferido ? " (preferido)" : ""}
+                      </option>
+                    ))}
+                  </select>
+
+                  <p className="text-[11px] text-slate-500">
+                    Si elegís un bulto acá (o por SKU), en C se usan sus dims
+                    aunque el lote sea PRODUCTO_ESTANDAR. El un/bulto se deriva
+                    con dim_unidad_mm si existe; si falta, cae a catálogo.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced((v) => !v)}
+                    className="mt-2 inline-flex w-full justify-center px-3 py-2 rounded-md border bg-white text-slate-900 hover:bg-slate-50 text-sm"
+                  >
+                    {showAdvanced ? "Ocultar avanzado" : "Avanzado"}
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          <div className="rounded-md border bg-white p-3">
-            <p className="text-xs font-medium text-slate-700">
-              Demanda por SKU (editable)
-            </p>
-            <p className="mt-1 text-[11px] text-slate-500">
-              Esto no toca la base. Sirve para simular escenarios de pedido.
-            </p>
+            <div className="rounded-md border bg-white p-3">
+              <p className="text-xs font-medium text-slate-700">
+                Demanda por SKU (editable)
+              </p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Esto no toca la base. Sirve para simular escenarios de pedido.
+              </p>
 
-            <div className="mt-3 max-h-72 overflow-auto rounded-md border">
-              <ul className="divide-y text-xs">
-                {lote.items.map((it) => {
-                  const id = it.tipo_producto_id;
+              <div className="mt-3 max-h-72 overflow-auto rounded-md border">
+                <ul className="divide-y text-xs">
+                  {lote.items.map((it) => {
+                    const id = it.tipo_producto_id;
 
-                  const chosenBulto =
-                    empresaBultos.length > 0
-                      ? pickBultoEmpresaForSku(id)
-                      : null;
+                    const chosenBulto =
+                      empresaBultos.length > 0
+                        ? pickBultoEmpresaForSku(id)
+                        : null;
 
-                  return (
-                    <li key={id} className="p-3 space-y-2">
-                      <div className="min-w-0">
-                        <p className="font-semibold text-slate-900">
-                          {it.tipo_producto.codigo}
-                        </p>
-                        <p className="text-slate-600">
-                          {it.tipo_producto.descripcion}
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="space-y-1">
-                          <label className="text-[11px] text-slate-600">
-                            Unidades planificadas
-                          </label>
-                          <input
-                            className="w-full border rounded-md px-2 py-2 text-sm bg-white"
-                            type="number"
-                            min={0}
-                            value={planUnitsBySku[id] ?? ""}
-                            onChange={(e) => setPlanForSku(id, e.target.value)}
-                          />
+                    return (
+                      <li key={id} className="p-3 space-y-2">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-slate-900">
+                            {it.tipo_producto.codigo}
+                          </p>
+                          <p className="text-slate-600">
+                            {it.tipo_producto.descripcion}
+                          </p>
                         </div>
 
-                        {/* Avanzado: override por SKU */}
-                        {showAdvanced && empresaBultos.length > 0 ? (
+                        <div className="grid grid-cols-2 gap-2">
                           <div className="space-y-1">
                             <label className="text-[11px] text-slate-600">
-                              Bulto empresa (SKU)
+                              Unidades planificadas
                             </label>
-                            <select
+                            <input
                               className="w-full border rounded-md px-2 py-2 text-sm bg-white"
-                              value={bultoEmpresaIdBySku[id] ?? ""}
+                              type="number"
+                              min={0}
+                              value={planUnitsBySku[id] ?? ""}
                               onChange={(e) =>
-                                setSkuBultoEmpresa(id, e.target.value)
+                                setPlanForSku(id, e.target.value)
                               }
-                            >
-                              <option value="">(usar global)</option>
-                              {empresaBultos.map((b) => (
-                                <option key={b.id} value={b.id}>
-                                  {b.codigo} — {b.largo_mm}×{b.ancho_mm}×
-                                  {b.alto_mm} mm
-                                </option>
-                              ))}
-                            </select>
-                            {chosenBulto ? (
-                              <p className="text-[11px] text-slate-500">
-                                Activo: {chosenBulto.codigo}
-                              </p>
-                            ) : null}
+                            />
                           </div>
-                        ) : (
-                          <div className="space-y-1">
-                            <label className="text-[11px] text-slate-600">
-                              Bulto (SKU)
-                            </label>
-                            <div className="w-full border rounded-md px-2 py-2 text-sm bg-slate-50 text-slate-500">
-                              {empresaBultos.length > 0 ? "(usar global)" : "—"}
+
+                          {/* Avanzado: override por SKU */}
+                          {showAdvanced && empresaBultos.length > 0 ? (
+                            <div className="space-y-1">
+                              <label className="text-[11px] text-slate-600">
+                                Bulto empresa (SKU)
+                              </label>
+                              <select
+                                className="w-full border rounded-md px-2 py-2 text-sm bg-white"
+                                value={bultoEmpresaIdBySku[id] ?? ""}
+                                onChange={(e) =>
+                                  setSkuBultoEmpresa(id, e.target.value)
+                                }
+                              >
+                                <option value="">(usar global)</option>
+                                {empresaBultos.map((b) => (
+                                  <option key={b.id} value={b.id}>
+                                    {b.codigo} — {b.largo_mm}×{b.ancho_mm}×
+                                    {b.alto_mm} mm
+                                  </option>
+                                ))}
+                              </select>
+                              {chosenBulto ? (
+                                <p className="text-[11px] text-slate-500">
+                                  Activo: {chosenBulto.codigo}
+                                </p>
+                              ) : null}
                             </div>
-                          </div>
-                        )}
-                      </div>
+                          ) : (
+                            <div className="space-y-1">
+                              <label className="text-[11px] text-slate-600">
+                                Bulto (SKU)
+                              </label>
+                              <div className="w-full border rounded-md px-2 py-2 text-sm bg-slate-50 text-slate-500">
+                                {empresaBultos.length > 0
+                                  ? "(usar global)"
+                                  : "—"}
+                              </div>
+                            </div>
+                          )}
+                        </div>
 
-                      <p className="text-[11px] text-slate-500">
-                        Unidad (dim_unidad_mm): {fmtDim(tryDimUnidad(it))} ·
-                        Bulto:{" "}
-                        {chosenBulto
-                          ? `${chosenBulto.largo_mm}×${chosenBulto.ancho_mm}×${chosenBulto.alto_mm} mm`
-                          : fmtDim(asDimBultoStd(it))}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
+                        <p className="text-[11px] text-slate-500">
+                          Unidad (dim_unidad_mm): {fmtDim(tryDimUnidad(it))} ·
+                          Bulto:{" "}
+                          {chosenBulto
+                            ? `${chosenBulto.largo_mm}×${chosenBulto.ancho_mm}×${chosenBulto.alto_mm} mm`
+                            : fmtDim(asDimBultoStd(it))}
+                        </p>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             </div>
-          </div>
 
-          <p className="text-[11px] text-slate-500">
-            En C, el usuario decide la demanda; el sistema deriva un/bulto en
-            función del bulto elegido (si hay) y los datos de unidad.
-          </p>
-        </div>
-      )}
-
-      {/* Visor 3D */}
-      <div className="rounded-lg border p-3 space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-xs font-medium text-slate-700">Visor 3D (bulto)</p>
-
-          <select
-            className="border rounded-md px-2 py-1 text-xs bg-white"
-            value={viewerSkuId}
-            onChange={(e) => setViewerSkuId(Number(e.target.value))}
-          >
-            {skuOptions.map((x) => (
-              <option key={x.tipo_producto_id} value={x.tipo_producto_id}>
-                {x.codigo}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {activeItemForViewer?.dim_bulto_mm ? (
-          <BultoViewerFromSnapshot
-            bultoDimMm={activeItemForViewer.dim_bulto_mm}
-            unidadDimMm={unidadDimForViewer}
-            productoId={activeItemForViewer.tipo_producto_id}
-            codigo={activeItemForViewer.codigo}
-            unidades={activeItemForViewer.unidades_planificadas}
-          />
-        ) : (
-          <div className="rounded-md border bg-slate-50 p-3 text-xs text-slate-600">
-            No hay dimensiones de bulto válidas para este SKU en el candidato
-            activo.
+            <p className="text-[11px] text-slate-500">
+              En C, el usuario decide la demanda; el sistema deriva un/bulto en
+              función del bulto elegido (si hay) y los datos de unidad.
+            </p>
           </div>
         )}
       </div>
+      {/* Columna derecha: Preview */}
+      <div className="lg:col-span-7 space-y-4">
+        {/* Visor 3D */}
+        <div className="rounded-lg border p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-700">Visor 3D</p>
 
-      {/* Warnings */}
-      {active.warnings && active.warnings.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg text-xs text-amber-900">
-          <p className="font-semibold mb-1">Advertencias</p>
-          <ul className="list-disc pl-5 space-y-1">
-            {active.warnings.slice(0, 10).map((w, i) => (
-              <li key={i}>{w}</li>
-            ))}
-          </ul>
-          {active.warnings.length > 10 ? (
-            <p className="mt-2 text-[11px] text-amber-800">
-              Se muestran 10 de {active.warnings.length}.
-            </p>
-          ) : null}
-        </div>
-      )}
-
-      {/* Vista rápida */}
-      <div className="rounded-lg border p-3">
-        <p className="text-xs font-medium text-slate-700">Vista rápida</p>
-
-        <div className="mt-2 max-h-72 overflow-auto rounded-md border">
-          <ul className="divide-y text-xs">
-            {active.items.map((it) => (
-              <li key={it.tipo_producto_id} className="p-3">
-                <p className="font-semibold text-slate-900">{it.codigo}</p>
-
-                <p className="mt-1 text-slate-700">
-                  {it.unidades_planificadas} un plan · {it.cantidad_bultos}{" "}
-                  bultos · {it.unidades_por_bulto} un/bulto
-                  {it.unidades_por_bulto > 0 &&
-                  it.unidades_planificadas % it.unidades_por_bulto !== 0 ? (
-                    <span className="text-amber-700">
-                      {" "}
-                      · parcial ({it.sobrante_unidades} un)
-                    </span>
-                  ) : null}
-                </p>
-
-                <p className="mt-1 text-slate-500">
-                  Dim bulto: {fmtDim(it.dim_bulto_mm)} ·{" "}
-                  <span className="text-[11px]">
-                    un/bulto:{" "}
-                    <span className="font-medium">
-                      {it.audit.sourceUnPorBulto}
-                    </span>{" "}
-                    · dims:{" "}
-                    <span className="font-medium">{it.audit.sourceDims}</span>
-                    {it.audit.bultoEmpresaCodigo ? (
-                      <>
-                        {" "}
-                        · bulto:{" "}
-                        <span className="font-medium">
-                          {it.audit.bultoEmpresaCodigo}
-                        </span>
-                      </>
-                    ) : null}
-                  </span>
-                </p>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <div className="text-[11px] text-slate-500">
-            Totales: {active.totales.unidades} un · {active.totales.bultos}{" "}
-            bultos
-            {active.totales.bultosParciales > 0 ? (
-              <span className="text-amber-700">
-                {" "}
-                · {active.totales.bultosParciales} parciales
+            {hasMultiSku ? (
+              <select
+                className="border rounded-md px-2 py-1 text-xs bg-white"
+                value={viewerSkuId}
+                onChange={(e) => setViewerSkuId(Number(e.target.value))}
+              >
+                {skuOptions.map((x) => (
+                  <option key={x.tipo_producto_id} value={x.tipo_producto_id}>
+                    {x.codigo}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-[11px] px-2 py-1 rounded-full border bg-white text-slate-700">
+                {skuOptions[0]?.codigo ?? "SKU"}
               </span>
-            ) : null}
+            )}
           </div>
 
-          <button
-            type="button"
-            disabled={layoutLoading}
-            onClick={async () => {
-              setLayoutError(null);
-              setLayoutLoading(true);
-              try {
-                const res = await previewBultoLayout3D({
-                  loteId: lote.id,
-                  snap: active,
-                  // ✅ si querés permitir “bulto empresa” aunque lote sea PRODUCTO_ESTANDAR,
-                  // pasá acá el dim seleccionado global (cuando exista)
-                  // bultoOverrideMm: selected === "C" ? { largo: ..., ancho: ..., alto: ... } : null,
-                });
+          {/* INDICADOR (nuevo) */}
+          {layoutForViewer?.placements?.length ? (
+            <div className="text-[11px] text-emerald-700">
+              Layout listo: {layoutForViewer.placements.length} unidades de
+              producto.
+            </div>
+          ) : (
+            <div className="text-[11px] text-slate-500">
+              El layout no está generado o quedó desactualizado. Usá{" "}
+              <span className="font-medium">“Ver layout en visor”</span> para
+              calcular la ubicación de las unidades.
+            </div>
+          )}
 
-                const snapWithLayout = { ...active, layout3d: res.layout };
-
-                console.log("LAYOUT3D:", {
-                  has: !!snapWithLayout.layout3d,
-                  contenido: snapWithLayout.layout3d?.contenido?.length,
-                  placements: snapWithLayout.layout3d?.placements?.length,
-                  w: snapWithLayout.layout3d?.warnings?.slice(0, 5),
-                });
-
-                onApply(snapWithLayout);
-              } catch (e) {
-                console.error(e);
-                setLayoutError("No se pudo generar el layout 3D del bulto.");
-                // aplico igual sin layout, así no frenás el flujo
-                onApply(active);
-              } finally {
-                setLayoutLoading(false);
-              }
-            }}
-            className="px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 text-sm disabled:opacity-50"
-          >
-            {layoutLoading ? "Generando 3D..." : "Aplicar bulto al workflow"}
-          </button>
-
-          {layoutError && (
-            <p className="mt-2 text-[11px] text-red-600">{layoutError}</p>
+          {activeItemForViewer?.dim_bulto_mm ? (
+            <BultoViewerFromSnapshot
+              bultoDimMm={activeItemForViewer.dim_bulto_mm}
+              unidadDimMm={unidadDimForViewer}
+              productoId={activeItemForViewer.tipo_producto_id}
+              codigo={activeItemForViewer.codigo}
+              unidades={activeItemForViewer.unidades_planificadas}
+              placements={layoutForViewer?.placements ?? null}
+            />
+          ) : (
+            <div className="rounded-md border bg-slate-50 p-3 text-xs text-slate-600">
+              No hay dimensiones de bulto válidas para este SKU en el candidato
+              activo.
+            </div>
           )}
         </div>
+
+        {/* Warnings */}
+        {active.warnings && active.warnings.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg text-xs text-amber-900">
+            <p className="font-semibold mb-1">Advertencias</p>
+            <ul className="list-disc pl-5 space-y-1">
+              {active.warnings.slice(0, 10).map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+            {active.warnings.length > 10 ? (
+              <p className="mt-2 text-[11px] text-amber-800">
+                Se muestran 10 de {active.warnings.length}.
+              </p>
+            ) : null}
+          </div>
+        )}
+
+        <div className="mt-3 space-y-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-[11px] text-slate-500">
+              Totales: {active.totales.unidades} un · {active.totales.bultos}{" "}
+              bultos
+              {active.totales.bultosParciales > 0 ? (
+                <span className="text-amber-700">
+                  {" "}
+                  · {active.totales.bultosParciales} parciales
+                </span>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {/* 1) Ver layout */}
+              <button
+                type="button"
+                disabled={layoutLoading}
+                onClick={async () => {
+                  setLayoutError(null);
+                  setLayoutLoading(true);
+                  try {
+                    const res = await previewBultoLayout3D({
+                      loteId: lote.id,
+                      snap: active,
+                    });
+
+                    setDraftLayout(res.layout);
+                    setDraftKey(selected);
+
+                    console.log("DRAFT LAYOUT:", {
+                      key: selected,
+                      contenido: res.layout?.contenido?.length,
+                      placements: res.layout?.placements?.length,
+                      w: res.layout?.warnings?.slice(0, 5),
+                    });
+                  } catch (e) {
+                    console.error(e);
+                    setLayoutError(
+                      "No se pudo generar el layout 3D del bulto."
+                    );
+                  } finally {
+                    setLayoutLoading(false);
+                  }
+                }}
+                className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 text-sm disabled:opacity-50"
+              >
+                {layoutLoading ? "Generando layout..." : "Ver layout en visor"}
+              </button>
+
+              {/* 2) Aplicar */}
+              <button
+                type="button"
+                disabled={!canApply}
+                onClick={() => {
+                  // si está habilitado, siempre aplica con layout
+                  const snapToApply = { ...active, layout3d: draftLayout! };
+
+                  setAppliedSnap(snapToApply);
+                  onApply(snapToApply);
+                }}
+                className="px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Aplicar al workflow
+              </button>
+            </div>
+          </div>
+
+          {/* Hint de estado */}
+          <p className="text-[11px] text-slate-500">
+            {canApply ? (
+              <>
+                Layout verificado para <span className="font-medium">candidato {selected}</span>.
+                Podés aplicar al workflow.
+              </>
+            ) : (
+              <>
+                Para aplicar, primero generá y verificá el layout con{" "}
+                <span className="font-medium">“Ver layout en visor”</span>.
+              </>
+            )}
+          </p>
+
+          {layoutError && (
+            <p className="text-[11px] text-red-600">{layoutError}</p>
+          )}
+        </div>
+
+        {/* Vista rápida */}
+        <details className="rounded-lg border p-3">
+          <summary className="cursor-pointer text-xs font-medium text-slate-700">
+            Vista rápida
+            <span className="ml-2 text-[11px] text-slate-500">
+              ({active.items.length} SKUs)
+            </span>
+          </summary>
+
+          <div className="mt-2 max-h-72 overflow-auto rounded-md border">
+            <ul className="divide-y text-xs">
+              {active.items.map((it) => (
+                <li key={it.tipo_producto_id} className="p-3">
+                  <p className="font-semibold text-slate-900">{it.codigo}</p>
+
+                  <p className="mt-1 text-slate-700">
+                    {it.unidades_planificadas} un plan · {it.cantidad_bultos}{" "}
+                    bultos · {it.unidades_por_bulto} un/bulto
+                    {it.unidades_por_bulto > 0 &&
+                      it.unidades_planificadas % it.unidades_por_bulto !== 0 ? (
+                      <span className="text-amber-700">
+                        {" "}
+                        · parcial ({it.sobrante_unidades} un)
+                      </span>
+                    ) : null}
+                  </p>
+
+                  <p className="mt-1 text-slate-500">
+                    Dim bulto: {fmtDim(it.dim_bulto_mm)} ·{" "}
+                    <span className="text-[11px]">
+                      un/bulto:{" "}
+                      <span className="font-medium">
+                        {it.audit.sourceUnPorBulto}
+                      </span>{" "}
+                      · dims:{" "}
+                      <span className="font-medium">{it.audit.sourceDims}</span>
+                      {it.audit.bultoEmpresaCodigo ? (
+                        <>
+                          {" "}
+                          · bulto:{" "}
+                          <span className="font-medium">
+                            {it.audit.bultoEmpresaCodigo}
+                          </span>
+                        </>
+                      ) : null}
+                    </span>
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </details>
       </div>
     </div>
   );
