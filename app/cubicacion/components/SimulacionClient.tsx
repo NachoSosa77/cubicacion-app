@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { BultoPanel } from "../simulacion/[loteId]/BultoPanel";
 import { BultoSimSnapshot } from "../simulacion/types/types";
+import { CamionClientSimV2 } from "./CamionClientSimV";
 import { PalletClientV2 } from "./PalletClientV2";
 
 type EmpresaBulto = {
@@ -33,7 +34,8 @@ type ClientContenedor = {
 
 type ClientLote = {
   id: number;
-  descripcion?: string | null;
+  empresaId:number;
+  descripcion: string | null;
   unidades_totales: number;
   bultos_totales: number;
 
@@ -67,6 +69,54 @@ type ClientLote = {
   }>;
 };
 
+/* =========================
+   Camión (types mínimos)
+========================= */
+
+type Transporte = {
+  id: number;
+  denominacion_de_vehiculo: string;
+  mt_largo_cub: number;
+  mt_ancho_cub: number;
+  mt_alto_cub: number;
+  max_peso_kg?: number | null;
+};
+
+type PalletSummary = {
+  palletsGuardados: number;
+  pesoEstimadoKg: number;
+  lastUpdatedAt: string | null;
+};
+
+// Si ya tenés tipos exportados desde actions/lib, podés reemplazar estos
+type CamionStrategy = "ESTABLE" | "OPTIMIZAR" | "DESCARGA_RAPIDA";
+type CamionPlanStatus = "BORRADOR" | "SELECCIONADO" | "DESCARTADO";
+
+type DimMm = { largo: number; ancho: number; alto: number };
+
+type CamionPlacement = {
+  palletPlanId: number;
+  dimMm: DimMm;
+  posCentroMm: { x: number; y: number; z: number };
+  rot90: boolean;
+};
+
+type CamionPlanResult = {
+  palletsTotales: number;
+  palletsEnCamion: number;
+  camionesRequeridos: number;
+  pesoTotalKg: number;
+  ocupacionBasePct: number;
+  warnings: string[];
+  placements: CamionPlacement[];
+  camionDimMm: DimMm;
+};
+
+type CamionPreviewResponse = {
+  recommended_strategy: CamionStrategy;
+  plans_by_strategy: Record<CamionStrategy, CamionPlanResult>;
+};
+
 function pill(text: string) {
   return (
     <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700 shadow-sm">
@@ -80,11 +130,27 @@ export function SimulacionClient({
   lote,
   contenedores,
   empresaBultos,
+
+  // === NUEVO (para Step 3 inline) ===
+  transportes,
+  palletSummary,
+  onPreviewCamion,
+  onGuardarCamion,
 }: {
   empresaId: number;
   lote: ClientLote;
   contenedores: ClientContenedor[];
   empresaBultos: EmpresaBulto[];
+
+  transportes: Transporte[];
+  palletSummary: PalletSummary;
+  onPreviewCamion: (params: { transporteId: number }) => Promise<CamionPreviewResponse>;
+  onGuardarCamion: (params: {
+    transporteId: number;
+    strategy: CamionStrategy;
+    status?: CamionPlanStatus;
+    plan: CamionPlanResult;
+  }) => Promise<{ camionPlanId: number }>;
 }) {
   const [bultoSnap, setBultoSnap] = useState<BultoSimSnapshot | null>(null);
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -94,12 +160,11 @@ export function SimulacionClient({
     if (!bultoSnap) return lote;
 
     const itemsByTipoProductoId = new Map(
-      bultoSnap.items.map((x) => [x.tipo_producto_id, x])
+      bultoSnap.items.map((x) => [x.tipo_producto_id, x]),
     );
 
     return {
       ...lote,
-      // opcional: “marcar” que es simulado
       __simulacion: {
         candidateKey: bultoSnap.candidateKey,
         titulo: bultoSnap.titulo,
@@ -115,7 +180,6 @@ export function SimulacionClient({
           cantidad_unidades: sim.unidades_planificadas,
           cantidad_bultos: sim.cantidad_bultos,
           unidades_por_bulto: sim.unidades_por_bulto,
-          // opcional: transportar dims si las necesitás luego
           dim_bulto_mm: sim.dim_bulto_mm ?? null,
         };
       }),
@@ -125,19 +189,28 @@ export function SimulacionClient({
   const hasBulto = !!bultoSnap;
   const hasPallet = palletPlanId != null;
 
-  // Si querés ser estricto: el pallet solo “habilitado” si hay bulto aplicado.
-  // (Hoy tu Pallet funciona igual; esto es UX, no lógica.)
   const palletEnabled = hasBulto;
   const camionEnabled = hasPallet;
 
-  const canGoPallet = hasBulto; // opcional: si querés bloquear
-  const canGoCamion = hasPallet; // opcional: si querés bloquear
+  const canGoPallet = hasBulto;
+  const canGoCamion = hasPallet;
 
-  console.log(
-    "empresaBultos:",
-    empresaBultos?.length,
-    empresaBultos?.map((b) => b.codigo)
-  );
+  /* =========================
+     Handlers Step 3 (inline)
+  ========================= */
+
+  const handlePreviewCamion = (params: { transporteId: number }) => {
+    return onPreviewCamion(params);
+  };
+
+  const handleGuardarCamion = (params: {
+    transporteId: number;
+    strategy: CamionStrategy;
+    status?: CamionPlanStatus;
+    plan: CamionPlanResult;
+  }) => {
+    return onGuardarCamion(params);
+  };
 
   return (
     <section className="bg-slate-50/40">
@@ -156,10 +229,10 @@ export function SimulacionClient({
                 </p>
 
                 <div className="mt-3 flex flex-wrap gap-2 leading-tight">
-                  {pill(`Lote #${lote.id}`)}
-                  {pill(`${lote.items.length} productos`)}
-                  {pill(`${lote.unidades_totales} unidades`)}
-                  {pill(`${lote.bultos_totales} bultos (snapshot)`)}
+                  {pill(`Lote ${lote.descripcion}`)}
+                  {pill(`Tipos de productos: ${lote.items.length} `)}
+                  {pill(`Unidades: ${lote.unidades_totales} `)}
+                  {pill(`Bultos: ${lote.bultos_totales} `)}
                 </div>
               </div>
 
@@ -207,15 +280,15 @@ export function SimulacionClient({
                         hasPallet
                           ? "text-emerald-700 font-medium"
                           : palletEnabled
-                          ? "text-indigo-700 font-medium"
-                          : "text-slate-600"
+                            ? "text-indigo-700 font-medium"
+                            : "text-slate-600"
                       }
                     >
                       {hasPallet
                         ? `Guardado #${palletPlanId}`
                         : palletEnabled
-                        ? "Listo para calcular"
-                        : "Bloqueado"}
+                          ? "Listo para calcular"
+                          : "Bloqueado"}
                     </span>
                   </span>
 
@@ -249,7 +322,6 @@ export function SimulacionClient({
                   className="px-3 py-2 rounded-md border bg-white text-slate-900 hover:bg-slate-50 text-sm disabled:opacity-50"
                   disabled={!palletEnabled}
                   onClick={() => {
-                    // UX: scroll al panel 2 si querés (opcional)
                     document
                       .getElementById("panel-pallet")
                       ?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -323,15 +395,13 @@ export function SimulacionClient({
                 <div className="text-xs text-slate-600">Paso 3</div>
                 <div className="font-semibold">Camión</div>
                 <div className="text-[11px] text-slate-500">
-                  {hasPallet
-                    ? "Listo para planificar"
-                    : "Requiere pallet guardado"}
+                  {hasPallet ? "Listo para planificar" : "Requiere pallet guardado"}
                 </div>
               </button>
             </div>
           </div>
 
-          {/* Panel activo (a ancho completo) */}
+          {/* Panel activo */}
           <div className="rounded-2xl border bg-white shadow-sm">
             {step === 1 && (
               <div className="p-4 md:p-5">
@@ -340,7 +410,6 @@ export function SimulacionClient({
                   empresaBultos={empresaBultos}
                   onApply={(snap) => {
                     setBultoSnap(snap);
-                    // UX: al aplicar bulto, saltar a Pallet
                     setStep(2);
                   }}
                 />
@@ -355,7 +424,7 @@ export function SimulacionClient({
             )}
 
             {step === 2 && (
-              <div className="p-4 md:p-5">
+              <div className="p-4 md:p-5" id="panel-pallet">
                 <div className="mb-3 flex items-start justify-between gap-2">
                   <div>
                     <h2 className="text-base font-semibold text-slate-900">
@@ -371,7 +440,6 @@ export function SimulacionClient({
                   bultoSnap={bultoSnap}
                   onSaved={(id: number) => {
                     setPalletPlanId(id);
-                    // UX: al guardar pallet, saltar a Camión
                     setStep(3);
                   }}
                 />
@@ -386,39 +454,17 @@ export function SimulacionClient({
             )}
 
             {step === 3 && (
-              <div className="p-4 md:p-5">
-                {/* Manteniendo tu placeholder, pero ahora a ancho completo */}
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h2 className="text-base font-semibold text-slate-900">
-                      3) Camión
-                    </h2>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Próximo: evaluar transporte y proponer camiones
-                      requeridos.
-                    </p>
-                  </div>
-                  <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border">
-                    Draft
-                  </span>
-                </div>
+  <div className="p-4 md:p-5" id="panel-camion">
+    <CamionClientSimV2
+      lote={lote}
+      transportes={transportes}
+      palletSummary={palletSummary}
+      onPreview={handlePreviewCamion}
+      onGuardar={handleGuardarCamion}
+    />
+  </div>
+)}
 
-                <div className="mt-4 rounded-lg border bg-slate-50 p-3 text-sm">
-                  <p className="font-medium text-slate-800">Siguiente paso</p>
-                  <p className="mt-1 text-xs text-slate-600 wrap-break-word">
-                    Una vez elegido el plan de pallet, evaluamos el transporte y
-                    proponemos camiones requeridos.
-                  </p>
-
-                  <a
-                    href={`/cubicacion/camion/${lote.id}`}
-                    className="mt-3 inline-flex w-full justify-center px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 text-sm"
-                  >
-                    Abrir camión (flujo actual)
-                  </a>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

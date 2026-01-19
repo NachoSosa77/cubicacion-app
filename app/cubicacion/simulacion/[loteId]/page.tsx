@@ -2,6 +2,10 @@
 import { prisma } from "@/lib/prisma";
 import { SimulacionClient } from "../../components/SimulacionClient";
 
+// AJUSTA estas rutas si en tu proyecto están en otra carpeta:
+import { previewCamionPlan } from "../../actions/previewCamionPlan";
+import { saveCamionPlan } from "../../actions/saveCamionPlan";
+
 type PageProps = {
   params: Promise<{ loteId: string }>;
 };
@@ -29,6 +33,8 @@ export default async function Page({ params }: PageProps) {
     },
   });
 
+  
+
   if (!lote) {
     return (
       <div className="p-6">
@@ -37,10 +43,10 @@ export default async function Page({ params }: PageProps) {
     );
   }
 
-  // ✅ EmpresaId: idealmente viene del lote (si tu modelo lo tiene)
-  // Si tu modelo no tiene empresa_id, dejalo fijo en 1 por ahora.
-  const empresaId =
-    (lote.empresa_id as number | undefined) ?? 1;
+  const loteOk = lote;
+
+
+  const empresaId = (loteOk.empresa_id as number | undefined) ?? 1;
 
   const contenedores = await prisma.tipoContenedor.findMany({
     where: { habilitado: true },
@@ -79,6 +85,70 @@ export default async function Page({ params }: PageProps) {
       habilitado: true,
     },
   });
+
+  // === NUEVO: Transportes para Step Camión ===
+  const transportes = await prisma.transporteClasificacion.findMany({
+    orderBy: { denominacion_de_vehiculo: "asc" },
+    select: {
+      id: true,
+      denominacion_de_vehiculo: true,
+      mt_largo_cub: true,
+      mt_ancho_cub: true,
+      mt_alto_cub: true,
+      max_peso_kg: true,
+    },
+  });
+
+  // === NUEVO: Pallet summary (si tu modelo usa snake_case updated_at, ajustá aquí) ===
+  const palletPlans = await prisma.cubicacionPalletPlan.findMany({
+    where: { loteId: lote.id }, // si tu prisma es loteId en camelCase, cambia a: where: { loteId: lote.id }
+    select: {
+      id: true,
+      peso_total_kg: true,
+      updatedAt: true, // si tu prisma es updatedAt, cambia a updatedAt
+    },
+    orderBy: { updatedAt: "desc" }, // idem
+  });
+
+  const palletsGuardados = palletPlans.length;
+  const pesoEstimadoKg = palletPlans.reduce(
+    (acc, p) => acc + Number(p.peso_total_kg ?? 0),
+    0
+  );
+  const lastUpdatedAt = palletPlans[0]?.updatedAt ?? null;
+
+  const palletSummary = {
+    palletsGuardados,
+    pesoEstimadoKg,
+    lastUpdatedAt: lastUpdatedAt ? new Date(lastUpdatedAt).toISOString() : null,
+  };
+
+  // Server actions wrappers (para pasar a Client Component)
+  async function onPreviewCamion(form: { transporteId: number }) {
+    "use server";
+    return previewCamionPlan({
+      empresaId,
+      loteId: loteOk.id,
+      transporteId: form.transporteId,
+    });
+  }
+
+  async function onGuardarCamion(payload: {
+    transporteId: number;
+    strategy: "ESTABLE" | "OPTIMIZAR" | "DESCARGA_RAPIDA";
+    status?: "BORRADOR" | "SELECCIONADO" | "DESCARTADO";
+    plan: any;
+  }) {
+    "use server";
+    return saveCamionPlan({
+      empresaId,
+      loteId: loteOk.id,
+      transporteId: payload.transporteId,
+      strategy: payload.strategy,
+      status: payload.status,
+      plan: payload.plan,
+    });
+  }
 
   const loteClient = {
     id: lote.id,
@@ -122,44 +192,46 @@ export default async function Page({ params }: PageProps) {
   }));
 
   return (
-  <div className="min-h-screen bg-slate-50">
-    <div className="mx-auto max-w-6xl p-6 space-y-4">
-      {/* Header de pantalla */}
-      <header className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-slate-900">
-            Simulación de cubicación
-          </h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Lote #{lote.id}
-            {lote.descripcion ? ` · ${lote.descripcion}` : ""}
-          </p>
-        </div>
+    <div className="min-h-screen bg-slate-50">
+      <div className="mx-auto max-w-6xl p-6 space-y-4">
+        <header className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold text-slate-900">
+              Simulación de cubicación
+            </h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Lote #{lote.id}
+              {lote.descripcion ? ` · ${lote.descripcion}` : ""}
+            </p>
+          </div>
 
-        <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
-          <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
-            Tipo bulto: {lote.tipo_bulto}
-          </span>
-          <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
-            Ítems: {lote.items.length}
-          </span>
-          <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
-            Empresa: {empresaId}
-          </span>
-        </div>
-      </header>
+          <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+            <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
+              Tipo bulto: {lote.tipo_bulto}
+            </span>
+            <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
+              Ítems: {lote.items.length}
+            </span>
+            <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
+              Empresa: {empresaId}
+            </span>
+          </div>
+        </header>
 
-      {/* Contenido principal */}
-      <main className="rounded-2xl border bg-white p-4 shadow-sm">
-        <SimulacionClient
-          empresaId={empresaId}
-          lote={loteClient as any}
-          contenedores={contenedoresClient as any}
-          empresaBultos={empresaBultos as any}
-        />
-      </main>
+        <main className="rounded-2xl border bg-white p-4 shadow-sm">
+          <SimulacionClient
+            empresaId={empresaId}
+            lote={loteClient as any}
+            contenedores={contenedoresClient as any}
+            empresaBultos={empresaBultos as any}
+            // === NUEVO: Step Camión inline ===
+            transportes={transportes as any}
+            palletSummary={palletSummary as any}
+            onPreviewCamion={onPreviewCamion}
+            onGuardarCamion={onGuardarCamion}
+          />
+        </main>
+      </div>
     </div>
-  </div>
-);
-
+  );
 }

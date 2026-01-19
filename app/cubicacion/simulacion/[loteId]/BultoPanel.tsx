@@ -43,6 +43,7 @@ type ClientLoteItem = {
 
 type ClientLote = {
   id: number;
+  descripcion: string | null | undefined;
   tipo_bulto: "PRODUCTO_ESTANDAR" | "EMPRESA_BULTO";
   bulto_empresa_id?: number | null;
   unidades_totales: number;
@@ -235,23 +236,44 @@ export function BultoPanel({
       } = calcBultos(unidadesPlan, unPorBulto);
       const bultos = bultosSnapshot > 0 ? bultosSnapshot : bultosCalc;
 
-      const dim =
-        lote.tipo_bulto === "PRODUCTO_ESTANDAR" ? asDimBultoStd(it) : null;
+      // dims de bulto para Candidate A:
+      // - PRODUCTO_ESTANDAR: catálogo (dims estándar)
+      // - EMPRESA_BULTO: bulto empresa del lote (DB)
+      let dim: DimMm | null = null;
+      let sourceDim: SourceTag = "FALLBACK";
+      let bultoEmpresaId: number | undefined = undefined;
+      let bultoEmpresaCodigo: string | undefined = undefined;
 
-      if (unPorBulto <= 0)
-        warnings.push(`${it.tipo_producto.codigo}: un/bulto inválido.`);
-      if (lote.tipo_bulto === "PRODUCTO_ESTANDAR" && !isValidDim(dim))
-        warnings.push(`${it.tipo_producto.codigo}: faltan dims estándar.`);
-      if (parcial)
-        warnings.push(
-          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`
-        );
+      if (lote.tipo_bulto === "PRODUCTO_ESTANDAR") {
+        dim = asDimBultoStd(it);
+        sourceDim = isValidDim(dim) ? "CATALOGO" : "FALLBACK";
+
+        if (!isValidDim(dim)) {
+          warnings.push(`${it.tipo_producto.codigo}: faltan dims estándar.`);
+        }
+      } else {
+        // EMPRESA_BULTO
+        const beId =
+          typeof lote.bulto_empresa_id === "number"
+            ? lote.bulto_empresa_id
+            : null;
+
+        const b = beId != null ? (empresaBultoMap.get(beId) ?? null) : null;
+
+        if (b) {
+          dim = { largo: b.largo_mm, ancho: b.ancho_mm, alto: b.alto_mm };
+          sourceDim = "BULTO_EMPRESA";
+          bultoEmpresaId = b.id;
+          bultoEmpresaCodigo = b.codigo;
+        } else {
+          warnings.push(
+            `${it.tipo_producto.codigo}: lote EMPRESA_BULTO sin bulto_empresa_id válido (no hay dim_bulto_mm).`
+          );
+        }
+      }
 
       const sourceUn: SourceTag =
         unPorBultoSnapshot != null ? "SNAPSHOT" : "FALLBACK";
-      const sourceDim: SourceTag =
-        lote.tipo_bulto === "PRODUCTO_ESTANDAR" ? "CATALOGO" : "FALLBACK";
-
       return {
         tipo_producto_id: it.tipo_producto_id,
         codigo: it.tipo_producto.codigo,
@@ -260,7 +282,12 @@ export function BultoPanel({
         cantidad_bultos: bultos,
         sobrante_unidades: sobrante,
         dim_bulto_mm: dim,
-        audit: { sourceUnPorBulto: sourceUn, sourceDims: sourceDim },
+        audit: {
+          sourceUnPorBulto: sourceUn,
+          sourceDims: sourceDim,
+          bultoEmpresaId,
+          bultoEmpresaCodigo,
+        },
       };
     });
 
@@ -275,7 +302,7 @@ export function BultoPanel({
       (a, x) =>
         a +
         (x.unidades_por_bulto > 0 &&
-          x.unidades_planificadas % x.unidades_por_bulto !== 0
+        x.unidades_planificadas % x.unidades_por_bulto !== 0
           ? 1
           : 0),
       0
@@ -289,7 +316,7 @@ export function BultoPanel({
       warnings,
       totales: { unidades, bultos, bultosParciales },
     };
-  }, [lote]);
+  }, [lote, empresaBultoMap]);
 
   // =========================
   // Candidate B (catálogo)
@@ -346,7 +373,7 @@ export function BultoPanel({
           (a, x) =>
             a +
             (x.unidades_por_bulto > 0 &&
-              x.unidades_planificadas % x.unidades_por_bulto !== 0
+            x.unidades_planificadas % x.unidades_por_bulto !== 0
               ? 1
               : 0),
           0
@@ -462,7 +489,7 @@ export function BultoPanel({
       (a, x) =>
         a +
         (x.unidades_por_bulto > 0 &&
-          x.unidades_planificadas % x.unidades_por_bulto !== 0
+        x.unidades_planificadas % x.unidades_por_bulto !== 0
           ? 1
           : 0),
       0
@@ -550,7 +577,7 @@ export function BultoPanel({
   const layoutForViewer =
     draftKey === selected && draftLayout
       ? draftLayout
-      : appliedSnap?.layout3d ?? null;
+      : (appliedSnap?.layout3d ?? null);
 
   const showWarnings = active.warnings?.length > 0;
   const hasLayout = !!layoutForViewer?.placements?.length;
@@ -569,14 +596,12 @@ export function BultoPanel({
   // 2) Si cambio el bulto empresa (global o por SKU), invalido el layout (solo afecta la preview)
   useEffect(() => {
     clearLayouts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bultoEmpresaIdGlobal, bultoEmpresaIdBySku]);
 
   // 3) Si edito demanda en C, invalido el layout (porque cambia el escenario)
   useEffect(() => {
     if (selected !== "C") return;
     clearLayouts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, planUnitsBySku]);
 
   // 4) Mantener viewerSkuId válido si cambia el lote/items
@@ -605,8 +630,8 @@ export function BultoPanel({
 
         <div className="flex flex-wrap gap-2">
           {pill(`Tipo bulto: ${lote.tipo_bulto}`)}
-          {pill(`Lote #${lote.id}`)}
-          {pill(`${lote.items.length} productos`)}
+          {pill(`Lote: ${lote.descripcion}`)}
+          {pill(`Tipo de productos:${lote.items.length}`)}
         </div>
 
         {/* Selector A/B/C */}
@@ -971,8 +996,9 @@ export function BultoPanel({
           <p className="text-[11px] text-slate-500">
             {canApply ? (
               <>
-                Layout verificado para <span className="font-medium">candidato {selected}</span>.
-                Podés aplicar al workflow.
+                Layout verificado para{" "}
+                <span className="font-medium">candidato {selected}</span>. Podés
+                aplicar al workflow.
               </>
             ) : (
               <>
@@ -1006,7 +1032,7 @@ export function BultoPanel({
                     {it.unidades_planificadas} un plan · {it.cantidad_bultos}{" "}
                     bultos · {it.unidades_por_bulto} un/bulto
                     {it.unidades_por_bulto > 0 &&
-                      it.unidades_planificadas % it.unidades_por_bulto !== 0 ? (
+                    it.unidades_planificadas % it.unidades_por_bulto !== 0 ? (
                       <span className="text-amber-700">
                         {" "}
                         · parcial ({it.sobrante_unidades} un)

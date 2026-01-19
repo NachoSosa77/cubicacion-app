@@ -155,7 +155,7 @@ const DEBUG_PACKING_UI =
 
 function dbgUI(...args: any[]) {
   if (!DEBUG_PACKING_UI) return;
-  // eslint-disable-next-line no-console
+   
   console.log(...args);
 }
 
@@ -1020,7 +1020,7 @@ export function MultiProductoConfigurator({
         setMensaje("Configuración guardada correctamente.");
         router.push(`/cubicacion/pallet/${loteId}`);
       } catch (err) {
-        // eslint-disable-next-line no-console
+         
         console.error(err);
         setErrores(["No se pudo guardar la configuración."]);
       }

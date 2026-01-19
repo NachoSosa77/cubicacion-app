@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { CubicacionCamionViewer3D } from "../../components/CubicacionCamionViewer3D";
+import { CubicacionCamionViewer3D } from "./CubicacionCamionViewer3D";
 
 /* =========================
    Types
@@ -130,7 +130,7 @@ function optionCard(opts: {
    Component
 ========================= */
 
-export function CamionClient({
+export function CamionClientSimV2({
   lote,
   transportes,
   palletSummary,
@@ -153,7 +153,6 @@ export function CamionClient({
   const [selected, setSelected] = useState<CamionStrategy>("ESTABLE");
   const [error, setError] = useState<string | null>(null);
   const [mensaje, setMensaje] = useState<string | null>(null);
-  const [modoSimulacion, setModoSimulacion] = useState(false);
 
   const [isPending, startTransition] = useTransition();
   const [isSaving, startSave] = useTransition();
@@ -205,12 +204,6 @@ export function CamionClient({
     setError(null);
     setMensaje(null);
 
-    if (modoSimulacion) {
-      setMensaje(
-        "Simulación realizada. La estrategia elegida no se guardó en la base."
-      );
-      return;
-    }
 
     startSave(async () => {
       try {
@@ -260,20 +253,6 @@ export function CamionClient({
           {lote.tipoBulto ? pill(`Tipo bulto: ${lote.tipoBulto}`) : null}
         </div>
 
-        {/* Modo simulación */}
-        <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-          <label className="inline-flex items-center gap-2 text-sm font-medium text-indigo-900">
-            <input
-              type="checkbox"
-              checked={modoSimulacion}
-              onChange={(e) => setModoSimulacion(e.target.checked)}
-            />
-            Activar modo simulación (no guarda)
-          </label>
-          <p className="mt-1 text-xs text-indigo-800">
-            Probá estrategias sin generar un plan definitivo.
-          </p>
-        </div>
 
         {/* Transporte + acciones */}
         <div className="rounded-lg border bg-white p-3 space-y-3">
@@ -375,7 +354,7 @@ export function CamionClient({
               disabled={!preview || !activePlan || isSaving || isPending}
               className="px-4 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 text-sm disabled:opacity-50"
             >
-              {isSaving ? "Guardando..." : "Guardar borrador"}
+              {isSaving ? "Guardando..." : "Guardar alternativa"}
             </button>
 
             <button

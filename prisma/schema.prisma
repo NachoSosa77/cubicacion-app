@@ -70,7 +70,7 @@ model TipoProducto {
 
   // ✅ pesos/volúmenes como Decimal (pro)
   peso_por_unidad_venta      Decimal? @db.Decimal(10, 3)
-  peso_por_unidad_entrega     Decimal? @db.Decimal(10, 3)
+  peso_por_unidad_entrega    Decimal? @db.Decimal(10, 3)
   volumen_por_unidad_entrega Decimal? @db.Decimal(10, 6)
 
   unidad_entra_por_bulto Int
@@ -90,12 +90,13 @@ model TipoProducto {
   cubicacions                   Cubicacion[]
   cubicacionProductoContenedors CubicacionProductoContenedor[]
   tipoContenedorProductos       TipoContenedorProducto[]
-  divisionServicio DivisionServicio @relation(fields: [division_servicio_id], references: [id])
+  divisionServicio              DivisionServicio               @relation(fields: [division_servicio_id], references: [id])
   cubicacionReglas              CubicacionRegla[]
   cubicacionConfiguracionItems  CubicacionConfiguracionItem[]
   bultoArmadoItems              BultoArmadoItem[]
   bultoArmadoPlacements         BultoArmadoPlacement[]
   cubicacionLoteItems           CubicacionLoteItem[]
+  cubicacionProductoPlans       CubicacionProductoPlan[]
 
   // ...
   @@map("tipo_producto")
@@ -607,8 +608,9 @@ model empresa {
   transporte       Transporte[]
   cubicacionReglas CubicacionRegla[]
 
-  bultos          EmpresaBulto[]
-  cubicacionLotes CubicacionLote[]
+  bultos                EmpresaBulto[]
+  cubicacionLotes       CubicacionLote[]
+  cubicacionSimulacions CubicacionSimulacion[]
 
   @@map("empresa")
 }
@@ -642,6 +644,7 @@ model EmpresaBulto {
   cubicacionConfiguracions CubicacionConfiguracion[]
   bultoArmados             BultoArmado[]
   cubicacionLotes          CubicacionLote[]
+  cubicacionBultoPlans     CubicacionBultoPlan[]
 
   @@unique([empresa_id, codigo])
   @@index([empresa_id, habilitado])
@@ -674,8 +677,8 @@ model Transporte {
 model CubicacionLote {
   id Int @id @default(autoincrement())
 
-  empresa_id   Int
-  descripcion  String?
+  empresa_id  Int
+  descripcion String?
 
   // NUEVO: totales snapshot del lote (consistencia para pallet/camión)
   unidades_totales Int @default(0)
@@ -693,25 +696,27 @@ model CubicacionLote {
   empresa       empresa       @relation(fields: [empresa_id], references: [id])
   bulto_empresa EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id])
 
-  items        CubicacionLoteItem[]
-  pallets      CubicacionPalletPlan[]
-  camion_plans CubicacionCamionPlan[]
+  items                   CubicacionLoteItem[]
+  pallets                 CubicacionPalletPlan[]
+  camion_plans            CubicacionCamionPlan[]
+  cubicacionSimulacions   CubicacionSimulacion[]
+  cubicacionProductoPlans CubicacionProductoPlan[]
+  cubicacionBultoPlans    CubicacionBultoPlan[]
 
   @@index([empresa_id], map: "idx_lote_empresa")
   @@map("cubicacion_lote")
 }
 
-
 model CubicacionLoteItem {
   id Int @id @default(autoincrement())
 
-  lote_id         Int
+  lote_id          Int
   tipo_producto_id Int
 
   cantidad_unidades Int
 
   // NUEVO: lo que seleccionó/derivó el sistema al guardar (consistencia)
-  cantidad_bultos    Int @default(1)
+  cantidad_bultos    Int  @default(1)
   unidades_por_bulto Int?
 
   volumen_total_m3 Float
@@ -745,19 +750,23 @@ model CubicacionPalletPlan {
   peso_total_kg         Float
   altura_utilizada_mm   Int
 
+  simulacion_id Int?
+
   // layout completo (pallets + placements + métricas por pallet)
   layout Json @db.Json
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  lote           CubicacionLote @relation(fields: [loteId], references: [id], onDelete: Cascade)
-  tipoContenedor TipoContenedor @relation(fields: [tipoContenedorId], references: [id])
+  lote           CubicacionLote        @relation(fields: [loteId], references: [id], onDelete: Cascade)
+  tipoContenedor TipoContenedor        @relation(fields: [tipoContenedorId], references: [id])
+  simulacion     CubicacionSimulacion? @relation(fields: [simulacion_id], references: [id], onDelete: SetNull)
 
   candidate_key CandidateKey @default(A)
 
   @@unique([loteId, tipoContenedorId, candidate_key], map: "uq_lote_contenedor_candidate")
   @@index([loteId], map: "idx_pallet_plan_lote")
+  @@index([simulacion_id], map: "cubicacion_pallet_plan_simulacion_id_idx")
   @@map("cubicacion_pallet_plan")
 }
 
@@ -767,13 +776,20 @@ enum CamionStrategy {
   DESCARGA_RAPIDA
 }
 
+enum CamionPlanStatus {
+  BORRADOR
+  SELECCIONADO
+  DESCARTADO
+}
+
 model CubicacionCamionPlan {
   id Int @id @default(autoincrement())
 
-  loteId       Int @map("lote_id")
-  transporteId Int @map("transporte_id")
+  lote_id       Int
+  transporte_id Int
 
   strategy CamionStrategy
+  status   CamionPlanStatus @default(BORRADOR)
 
   pallets_totales     Int
   pallets_en_camion   Int
@@ -781,17 +797,130 @@ model CubicacionCamionPlan {
   peso_total_kg       Float
   ocupacion_base_pct  Decimal @db.Decimal(6, 2)
 
-  // layout completo (camionDimMm + placements + warnings + etc.)
+  layout Json
+
+  simulacion_id Int?
+  simulacion    CubicacionSimulacion? @relation(fields: [simulacion_id], references: [id], onDelete: SetNull)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  lote       CubicacionLote          @relation(fields: [lote_id], references: [id], onDelete: Cascade)
+  transporte TransporteClasificacion @relation(fields: [transporte_id], references: [id])
+
+  @@index([lote_id])
+  @@index([transporte_id])
+  @@index([lote_id, transporte_id])
+  @@index([status])
+  @@index([simulacion_id], map: "cubicacion_camion_plan_simulacion_id_idx")
+  @@map("cubicacion_camion_plan")
+}
+
+enum CubicacionSimulacionStatus {
+  BORRADOR
+  SELECCIONADO
+  DESCARTADO
+}
+
+model CubicacionSimulacion {
+  id Int @id @default(autoincrement())
+
+  empresa_id Int
+  lote_id    Int?
+
+  titulo      String?
+  descripcion String?
+
+  status CubicacionSimulacionStatus @default(BORRADOR)
+
+  unidades_totales Int @default(0)
+  bultos_totales   Int @default(0)
+
+  meta Json? @db.Json
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  empresa empresa         @relation(fields: [empresa_id], references: [id])
+  lote    CubicacionLote? @relation(fields: [lote_id], references: [id], onDelete: SetNull)
+
+  productos CubicacionProductoPlan[]
+  bultos    CubicacionBultoPlan[]
+  pallets   CubicacionPalletPlan[]
+  camiones  CubicacionCamionPlan[]
+
+  @@index([empresa_id], map: "cubicacion_simulacion_empresa_id_idx")
+  @@index([lote_id], map: "cubicacion_simulacion_lote_id_idx")
+  @@index([status], map: "cubicacion_simulacion_status_idx")
+  @@map("cubicacion_simulacion")
+}
+
+model CubicacionProductoPlan {
+  id Int @id @default(autoincrement())
+
+  simulacion_id Int
+
+  tipo_producto_id Int?
+
+  codigo      String
+  descripcion String?
+
+  cantidad_unidades  Int  @default(0)
+  cantidad_bultos    Int  @default(0)
+  unidades_por_bulto Int?
+
+  dim_unidad_mm  Json?  @db.Json
+  peso_unidad_kg Float?
+
+  dim_bulto_mm  Json?  @db.Json
+  peso_bulto_kg Float?
+
+  volumen_total_m3 Float @default(0)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  simulacion       CubicacionSimulacion @relation(fields: [simulacion_id], references: [id], onDelete: Cascade)
+  tipo_producto    TipoProducto?        @relation(fields: [tipo_producto_id], references: [id], onDelete: SetNull)
+  cubicacionLote   CubicacionLote?      @relation(fields: [cubicacionLoteId], references: [id])
+  cubicacionLoteId Int?
+
+  @@unique([simulacion_id, codigo], map: "uq_producto_plan_simulacion_codigo")
+  @@index([simulacion_id], map: "cubicacion_producto_plan_simulacion_id_idx")
+  @@index([tipo_producto_id], map: "cubicacion_producto_plan_tipo_producto_id_idx")
+  @@map("cubicacion_producto_plan")
+}
+
+enum BultoPlanStatus {
+  BORRADOR
+  SELECCIONADO
+  DESCARTADO
+}
+
+model CubicacionBultoPlan {
+  id Int @id @default(autoincrement())
+
+  simulacion_id Int
+  lote_id       Int?
+
+  tipo_bulto       TipoBultoSeleccionado @default(EMPRESA_BULTO)
+  bulto_empresa_id Int?
+
+  unidades_totales Int @default(0)
+  bultos_totales   Int @default(0)
+
+  status BultoPlanStatus @default(BORRADOR)
+
   layout Json @db.Json
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  lote       CubicacionLote          @relation(fields: [loteId], references: [id], onDelete: Cascade)
-  transporte TransporteClasificacion @relation(fields: [transporteId], references: [id])
+  simulacion    CubicacionSimulacion @relation(fields: [simulacion_id], references: [id], onDelete: Cascade)
+  lote          CubicacionLote?      @relation(fields: [lote_id], references: [id], onDelete: SetNull)
+  bulto_empresa EmpresaBulto?        @relation(fields: [bulto_empresa_id], references: [id], onDelete: SetNull)
 
-  @@unique([loteId, transporteId, strategy], map: "uq_camion_plan_lote_transporte_strategy")
-  @@index([loteId], map: "idx_camion_plan_lote")
-  @@index([transporteId], map: "idx_camion_plan_transporte")
-  @@map("cubicacion_camion_plan")
+  @@index([simulacion_id], map: "cubicacion_bulto_plan_simulacion_id_idx")
+  @@index([status], map: "cubicacion_bulto_plan_status_idx")
+  @@map("cubicacion_bulto_plan")
 }

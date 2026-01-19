@@ -516,6 +516,7 @@ CREATE TABLE `cubicacion_camion_plan` (
     `lote_id` INTEGER NOT NULL,
     `transporte_id` INTEGER NOT NULL,
     `strategy` ENUM('ESTABLE', 'OPTIMIZAR', 'DESCARGA_RAPIDA') NOT NULL,
+    `status` ENUM('BORRADOR', 'SELECCIONADO', 'DESCARTADO') NOT NULL DEFAULT 'BORRADOR',
     `pallets_totales` INTEGER NOT NULL,
     `pallets_en_camion` INTEGER NOT NULL,
     `camiones_requeridos` INTEGER NOT NULL,
@@ -525,9 +526,10 @@ CREATE TABLE `cubicacion_camion_plan` (
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at` DATETIME(3) NOT NULL,
 
-    INDEX `idx_camion_plan_lote`(`lote_id`),
-    INDEX `idx_camion_plan_transporte`(`transporte_id`),
-    UNIQUE INDEX `uq_camion_plan_lote_transporte_strategy`(`lote_id`, `transporte_id`, `strategy`),
+    INDEX `cubicacion_camion_plan_lote_id_idx`(`lote_id`),
+    INDEX `cubicacion_camion_plan_transporte_id_idx`(`transporte_id`),
+    INDEX `cubicacion_camion_plan_lote_id_transporte_id_idx`(`lote_id`, `transporte_id`),
+    INDEX `cubicacion_camion_plan_status_idx`(`status`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 

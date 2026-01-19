@@ -1,5 +1,5 @@
 // lib/packing/bulto.ts
-/* eslint-disable @typescript-eslint/no-explicit-any */
+ 
 
 export type DimMm = { largo: number; ancho: number; alto: number };
 

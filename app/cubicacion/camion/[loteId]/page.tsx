@@ -54,7 +54,7 @@ export default async function CamionPage({
 
   async function onGuardar(payload: {
   transporteId: number;
-  strategy: "A" | "B" | "C";
+  strategy: "ESTABLE" | "OPTIMIZAR" | "DESCARGA_RAPIDA";
   plan: any;
 }) {
   "use server";
