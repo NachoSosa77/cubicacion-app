@@ -52,6 +52,12 @@ enum FragilesPolicy {
   BLOQUEAR_MEZCLA
 }
 
+enum CubicacionLoteStatus {
+  BORRADOR
+  SELECCIONADO
+  DESCARTADO
+}
+
 model TipoProducto {
   id                          Int       @id @default(autoincrement())
   division_servicio_id        Int
@@ -680,7 +686,11 @@ model CubicacionLote {
   empresa_id  Int
   descripcion String?
 
-  // NUEVO: totales snapshot del lote (consistencia para pallet/camión)
+  // NUEVO: estado + meta (existen en DB por lo que mostraste)
+  status CubicacionLoteStatus @default(BORRADOR)
+  meta   Json? @db.Json
+
+  // totales snapshot del lote (consistencia para pallet/camión)
   unidades_totales Int @default(0)
   bultos_totales   Int @default(0)
 
@@ -704,8 +714,10 @@ model CubicacionLote {
   cubicacionBultoPlans    CubicacionBultoPlan[]
 
   @@index([empresa_id], map: "idx_lote_empresa")
+  @@index([status], map: "cubicacion_lote_status_idx")
   @@map("cubicacion_lote")
 }
+
 
 model CubicacionLoteItem {
   id Int @id @default(autoincrement())
@@ -715,15 +727,24 @@ model CubicacionLoteItem {
 
   cantidad_unidades Int
 
-  // NUEVO: lo que seleccionó/derivó el sistema al guardar (consistencia)
+  // lo que seleccionó/derivó el sistema al guardar (consistencia)
   cantidad_bultos    Int  @default(1)
   unidades_por_bulto Int?
+
+  unidades_en_ultimo_bulto Int? @default(0)
+  sobrante_unidades        Int  @default(0)
 
   volumen_total_m3 Float
 
   // snapshot para reproducibilidad
   dim_unidad_mm  Json?  @db.Json
   peso_unidad_kg Float?
+
+  // NUEVO: dimensiones de bulto usadas al guardar (A/C)
+  dim_bulto_mm Json? @db.Json
+
+  // NUEVO: trazabilidad de dónde salió el bulto aplicado
+  bulto_fuente BultoFuente @default(CATALOGO)
 
   created_at DateTime @default(now())
 
@@ -732,6 +753,7 @@ model CubicacionLoteItem {
 
   @@index([lote_id], map: "idx_lote_item")
   @@index([tipo_producto_id])
+  @@index([bulto_fuente], map: "idx_lote_item_bulto_fuente")
   @@map("cubicacion_lote_item")
 }
 
@@ -780,6 +802,12 @@ enum CamionPlanStatus {
   BORRADOR
   SELECCIONADO
   DESCARTADO
+}
+
+enum BultoFuente {
+  CATALOGO
+  OPERATIVO
+  EMPRESA_BULTO
 }
 
 model CubicacionCamionPlan {
@@ -868,6 +896,9 @@ model CubicacionProductoPlan {
   cantidad_unidades  Int  @default(0)
   cantidad_bultos    Int  @default(0)
   unidades_por_bulto Int?
+
+  unidades_en_ultimo_bulto Int? @default(0)
+  sobrante_unidades        Int  @default(0)
 
   dim_unidad_mm  Json?  @db.Json
   peso_unidad_kg Float?

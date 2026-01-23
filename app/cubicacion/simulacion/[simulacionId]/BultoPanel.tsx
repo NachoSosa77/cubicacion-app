@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+
+import { applyBultoSnapshotToLote } from "../../actions/applyBultoSnapshotToLote";
+import { applyBultoSnapshotToSimulacion } from "../../actions/applyBultoSnapshotToSimulacion";
 import { BultoViewerFromSnapshot } from "../../components/BultoViewerFromSnapshot";
 import { previewBultoLayout3D } from "../actions/previewBultoLayout3D";
-import { BultoLayout3D, BultoSimSnapshot } from "../types/types";
+import type { BultoLayout3D, BultoSimSnapshot } from "../types/types";
 
 type DimMm = { largo: number; ancho: number; alto: number };
 
@@ -53,18 +56,25 @@ type ClientLote = {
 
 type SourceTag = "SNAPSHOT" | "CATALOGO" | "BULTO_EMPRESA" | "FALLBACK";
 
+/* =========================
+   Helpers
+========================= */
+
 function safeInt(v: unknown, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
+
 function safePosInt(v: unknown, fallback = 0) {
   const n = safeInt(v, fallback);
   return n > 0 ? n : fallback;
 }
+
 function ceilDiv(a: number, b: number) {
   if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return 0;
   return Math.ceil(a / b);
 }
+
 function isValidDim(d: DimMm | null | undefined) {
   if (!d) return false;
   return d.largo > 0 && d.ancho > 0 && d.alto > 0;
@@ -132,22 +142,50 @@ function calcUnidadesPorBultoGrid(args: {
 
 function calcBultos(unidadesPlan: number, unPorBulto: number) {
   if (unPorBulto <= 0) return { bultos: 0, sobrante: 0, parcial: false };
+
   const bultos = ceilDiv(unidadesPlan, unPorBulto);
+
+  // Si hay 1 solo bulto, operativamente NO lo marcamos como “parcial”
+  if (bultos <= 1) {
+    return { bultos: 1, sobrante: 0, parcial: false };
+  }
+
   const rem = unidadesPlan % unPorBulto;
   const parcial = rem !== 0;
   const sobrante = parcial ? rem : 0;
   return { bultos, sobrante, parcial };
 }
 
+function isParcialRow(it: {
+  cantidad_bultos: number;
+  unidades_por_bulto: number;
+  unidades_planificadas: number;
+}) {
+  if (it.cantidad_bultos <= 1) return false;
+  if (it.unidades_por_bulto <= 0) return false;
+  return it.unidades_planificadas % it.unidades_por_bulto !== 0;
+}
+
+/* =========================
+   Component
+========================= */
+
 export function BultoPanel({
   lote,
+  simulacionId,
+  simulacionLoteId,
   empresaBultos,
   onApply,
 }: {
+  simulacionId: number;
+  simulacionLoteId: number | null;
   lote: ClientLote;
   empresaBultos: EmpresaBulto[];
   onApply: (snap: BultoSimSnapshot) => void;
 }) {
+  const [applyLoading, setApplyLoading] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+
   // =========================
   // Estado Operativo (C)
   // =========================
@@ -159,8 +197,8 @@ export function BultoPanel({
         lote.items.map((it) => [
           it.tipo_producto_id,
           String(it.cantidad_unidades),
-        ])
-      )
+        ]),
+      ),
   );
 
   // Selección de bulto empresa (global + por SKU)
@@ -171,9 +209,11 @@ export function BultoPanel({
     null;
 
   const [bultoEmpresaIdGlobal, setBultoEmpresaIdGlobal] = useState<number | "">(
-    defaultEmpresaBultoId ?? ""
+    defaultEmpresaBultoId ?? "",
   );
+
   const [appliedSnap, setAppliedSnap] = useState<BultoSimSnapshot | null>(null);
+
   const [layoutLoading, setLayoutLoading] = useState(false);
   const [layoutError, setLayoutError] = useState<string | null>(null);
 
@@ -184,6 +224,7 @@ export function BultoPanel({
   const [bultoEmpresaIdBySku, setBultoEmpresaIdBySku] = useState<
     Record<number, number | "">
   >({});
+
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
   const empresaBultoMap = useMemo(() => {
@@ -193,7 +234,7 @@ export function BultoPanel({
   }, [empresaBultos]);
 
   const pickBultoEmpresaForSku = (
-    tipoProductoId: number
+    tipoProductoId: number,
   ): EmpresaBulto | null => {
     const skuId = bultoEmpresaIdBySku[tipoProductoId];
     if (typeof skuId === "number") return empresaBultoMap.get(skuId) ?? null;
@@ -222,18 +263,17 @@ export function BultoPanel({
 
       const unPorBultoFallback = safePosInt(
         it.tipo_producto.unidad_entra_por_bulto,
-        0
+        0,
       );
       const unPorBulto = unPorBultoSnapshot ?? unPorBultoFallback;
 
       const unidadesPlan = safePosInt(it.cantidad_unidades, 0);
 
       const bultosSnapshot = safePosInt(it.cantidad_bultos, 0);
-      const {
-        bultos: bultosCalc,
-        sobrante,
-        parcial,
-      } = calcBultos(unidadesPlan, unPorBulto);
+      const { bultos: bultosCalc, sobrante } = calcBultos(
+        unidadesPlan,
+        unPorBulto,
+      );
       const bultos = bultosSnapshot > 0 ? bultosSnapshot : bultosCalc;
 
       // dims de bulto para Candidate A:
@@ -252,7 +292,6 @@ export function BultoPanel({
           warnings.push(`${it.tipo_producto.codigo}: faltan dims estándar.`);
         }
       } else {
-        // EMPRESA_BULTO
         const beId =
           typeof lote.bulto_empresa_id === "number"
             ? lote.bulto_empresa_id
@@ -267,13 +306,14 @@ export function BultoPanel({
           bultoEmpresaCodigo = b.codigo;
         } else {
           warnings.push(
-            `${it.tipo_producto.codigo}: lote EMPRESA_BULTO sin bulto_empresa_id válido (no hay dim_bulto_mm).`
+            `${it.tipo_producto.codigo}: lote EMPRESA_BULTO sin bulto_empresa_id válido (no hay dim_bulto_mm).`,
           );
         }
       }
 
       const sourceUn: SourceTag =
         unPorBultoSnapshot != null ? "SNAPSHOT" : "FALLBACK";
+
       return {
         tipo_producto_id: it.tipo_producto_id,
         codigo: it.tipo_producto.codigo,
@@ -294,23 +334,19 @@ export function BultoPanel({
     const unidades =
       safePosInt(lote.unidades_totales, 0) ||
       items.reduce((a, x) => a + x.unidades_planificadas, 0);
+
     const bultos =
       safePosInt(lote.bultos_totales, 0) ||
       items.reduce((a, x) => a + x.cantidad_bultos, 0);
 
     const bultosParciales = items.reduce(
-      (a, x) =>
-        a +
-        (x.unidades_por_bulto > 0 &&
-        x.unidades_planificadas % x.unidades_por_bulto !== 0
-          ? 1
-          : 0),
+      (a, x) => a + (isParcialRow(x) ? 1 : 0),
       0
     );
 
     return {
       candidateKey: "A",
-      titulo: "A · Selección actual.",
+      titulo: "A - Plan vigente (catálogo / guardado)",
       scope: "SKU",
       items,
       warnings,
@@ -331,19 +367,19 @@ export function BultoPanel({
 
       const { bultos, sobrante, parcial } = calcBultos(
         unidadesPlan,
-        unPorBulto
+        unPorBulto,
       );
       const dim = asDimBultoStd(it);
 
       if (unPorBulto <= 0)
         warnings.push(
-          `${it.tipo_producto.codigo}: un/bulto inválido catálogo.`
+          `${it.tipo_producto.codigo}: un/bulto inválido catálogo.`,
         );
       if (!isValidDim(dim))
         warnings.push(`${it.tipo_producto.codigo}: faltan dims estándar.`);
       if (parcial)
         warnings.push(
-          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`
+          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
         );
 
       const TAG_CATALOGO: SourceTag = "CATALOGO";
@@ -362,7 +398,7 @@ export function BultoPanel({
 
     return {
       candidateKey: "B",
-      titulo: "B · Cálculo estándar por catálogo.",
+      titulo: "B · Recalcular con catálogo",
       scope: "SKU",
       items,
       warnings,
@@ -373,10 +409,10 @@ export function BultoPanel({
           (a, x) =>
             a +
             (x.unidades_por_bulto > 0 &&
-            x.unidades_planificadas % x.unidades_por_bulto !== 0
+              x.unidades_planificadas % x.unidades_por_bulto !== 0
               ? 1
               : 0),
-          0
+          0,
         ),
       },
     };
@@ -384,8 +420,6 @@ export function BultoPanel({
 
   // =========================
   // Candidate C (operativo pro)
-  // - editable demanda
-  // - dims bulto: si hay bulto empresa seleccionado, se usa aunque lote sea PRODUCTO_ESTANDAR
   // =========================
 
   const candidateC = useMemo<BultoSimSnapshot>(() => {
@@ -394,21 +428,18 @@ export function BultoPanel({
     const items = lote.items.map((it) => {
       const planStr =
         planUnitsBySku[it.tipo_producto_id] ?? String(it.cantidad_unidades);
+
       const unidadesPlan = safePosInt(
         planStr,
-        safePosInt(it.cantidad_unidades, 0)
+        safePosInt(it.cantidad_unidades, 0),
       );
 
-      // dims bulto (simulación)
       let dimBulto: DimMm | null = null;
       let sourceDim: SourceTag = "FALLBACK";
       let bultoEmpresaId: number | undefined = undefined;
       let bultoEmpresaCodigo: string | undefined = undefined;
       let espesorParedMm = 0;
 
-      // Reglas:
-      // - Si el usuario eligió un bulto empresa (global o SKU), usamos ese bulto para simular dims
-      // - Si no eligió, caemos a catálogo (si PRODUCTO_ESTANDAR)
       const b =
         empresaBultos.length > 0
           ? pickBultoEmpresaForSku(it.tipo_producto_id)
@@ -424,12 +455,10 @@ export function BultoPanel({
         dimBulto = asDimBultoStd(it);
         sourceDim = isValidDim(dimBulto) ? "CATALOGO" : "FALLBACK";
       } else {
-        // EMPRESA_BULTO pero sin selección usable
         dimBulto = null;
         sourceDim = "FALLBACK";
       }
 
-      // unidades por bulto derivado
       const dimUnidad = tryDimUnidad(it);
 
       let unPorBulto = 0;
@@ -441,31 +470,34 @@ export function BultoPanel({
           dimUnidad: dimUnidad!,
           espesorParedMm,
         });
-        if (unPorBulto > 0)
+
+        if (unPorBulto > 0) {
           sourceUn =
             sourceDim === "BULTO_EMPRESA" ? "BULTO_EMPRESA" : "CATALOGO";
+        }
       }
 
       if (unPorBulto <= 0) {
         unPorBulto = safePosInt(it.tipo_producto.unidad_entra_por_bulto, 0);
         sourceUn = "CATALOGO";
         warnings.push(
-          `${it.tipo_producto.codigo}: sin dim_unidad_mm o no entra por grilla; usando catálogo (unidad_entra_por_bulto).`
+          `${it.tipo_producto.codigo}: sin dim_unidad_mm o no entra por grilla; usando catálogo (unidad_entra_por_bulto).`,
         );
       }
 
       const { bultos, sobrante, parcial } = calcBultos(
         unidadesPlan,
-        unPorBulto
+        unPorBulto,
       );
 
       if (!isValidDim(dimBulto))
         warnings.push(
-          `${it.tipo_producto.codigo}: faltan dimensiones de bulto para simular.`
+          `${it.tipo_producto.codigo}: faltan dimensiones de bulto para simular.`,
         );
+
       if (parcial)
         warnings.push(
-          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`
+          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
         );
 
       return {
@@ -486,18 +518,13 @@ export function BultoPanel({
     });
 
     const bultosParciales = items.reduce(
-      (a, x) =>
-        a +
-        (x.unidades_por_bulto > 0 &&
-        x.unidades_planificadas % x.unidades_por_bulto !== 0
-          ? 1
-          : 0),
+      (a, x) => a + (isParcialRow(x) ? 1 : 0),
       0
     );
 
     return {
       candidateKey: "C",
-      titulo: "C · Cálculo operativo editable.",
+      titulo: "C · Cálculo operativo editable",
       scope: "SKU",
       items,
       warnings,
@@ -518,6 +545,7 @@ export function BultoPanel({
   ]);
 
   const [selected, setSelected] = useState<"A" | "B" | "C">("A");
+
   const active =
     selected === "A" ? candidateA : selected === "B" ? candidateB : candidateC;
 
@@ -534,7 +562,20 @@ export function BultoPanel({
     });
   };
 
-  const canApply = draftKey === selected && !!draftLayout?.placements?.length;
+  const canApply =
+    draftKey === selected &&
+    !!draftLayout &&
+    Array.isArray(draftLayout.placements) &&
+    draftLayout.placements.length > 0;
+
+  const effectiveLoteId =
+    typeof simulacionLoteId === "number" && simulacionLoteId > 0
+      ? simulacionLoteId
+      : typeof lote?.id === "number" && lote.id > 0
+        ? lote.id
+        : null;
+
+  const canPublishToLote = effectiveLoteId != null;
 
   // =========================
   // Visor 3D
@@ -546,13 +587,13 @@ export function BultoPanel({
         tipo_producto_id: it.tipo_producto_id,
         codigo: it.tipo_producto.codigo,
       })),
-    [lote.items]
+    [lote.items],
   );
 
   const hasMultiSku = skuOptions.length > 1;
 
   const [viewerSkuId, setViewerSkuId] = useState<number>(
-    () => skuOptions[0]?.tipo_producto_id ?? 0
+    () => skuOptions[0]?.tipo_producto_id ?? 0,
   );
 
   const loteItemBySku = useMemo(() => {
@@ -579,9 +620,6 @@ export function BultoPanel({
       ? draftLayout
       : (appliedSnap?.layout3d ?? null);
 
-  const showWarnings = active.warnings?.length > 0;
-  const hasLayout = !!layoutForViewer?.placements?.length;
-
   const clearLayouts = () => {
     setDraftLayout(null);
     setDraftKey(null);
@@ -590,26 +628,29 @@ export function BultoPanel({
   // 1) Si cambio de candidato A/B/C, el layout previo ya no es válido
   useEffect(() => {
     clearLayouts();
-    // Nota: no borro appliedSnap, porque es una "confirmación" del usuario.
   }, [selected]);
 
-  // 2) Si cambio el bulto empresa (global o por SKU), invalido el layout (solo afecta la preview)
+  // 2) Si cambio bulto empresa, invalido layout
   useEffect(() => {
     clearLayouts();
   }, [bultoEmpresaIdGlobal, bultoEmpresaIdBySku]);
 
-  // 3) Si edito demanda en C, invalido el layout (porque cambia el escenario)
+  // 3) Si edito demanda en C, invalido layout
   useEffect(() => {
     if (selected !== "C") return;
     clearLayouts();
   }, [selected, planUnitsBySku]);
 
-  // 4) Mantener viewerSkuId válido si cambia el lote/items
+  // 4) Mantener viewerSkuId válido
   useEffect(() => {
     if (!skuOptions.length) return;
     const exists = skuOptions.some((s) => s.tipo_producto_id === viewerSkuId);
     if (!exists) setViewerSkuId(skuOptions[0].tipo_producto_id);
   }, [skuOptions, viewerSkuId]);
+
+  console.log("lote", lote);
+  console.log("simulacionId", simulacionId);
+  console.log("simulacionLoteId", simulacionLoteId);
 
   // =========================
   // Render
@@ -630,8 +671,8 @@ export function BultoPanel({
 
         <div className="flex flex-wrap gap-2">
           {pill(`Tipo bulto: ${lote.tipo_bulto}`)}
-          {pill(`Lote: ${lote.descripcion}`)}
-          {pill(`Tipo de productos:${lote.items.length}`)}
+          {pill(`Lote: ${lote.descripcion ?? "—"}`)}
+          {pill(`Tipo de productos: ${lote.items.length}`)}
         </div>
 
         {/* Selector A/B/C */}
@@ -669,7 +710,7 @@ export function BultoPanel({
                         {snap.totales.bultosParciales > 0 ? (
                           <span className="text-amber-700">
                             {" "}
-                            · {snap.totales.bultosParciales} Bultos parciales
+                            · {snap.totales.bultosParciales} parciales
                           </span>
                         ) : null}
                       </p>
@@ -697,7 +738,6 @@ export function BultoPanel({
           <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
             <p className="text-xs font-medium text-slate-700">Operativo (C)</p>
 
-            {/* Bulto global (siempre disponible si hay empresaBultos) */}
             {empresaBultos.length > 0 && (
               <div className="rounded-md border bg-white p-3 space-y-2">
                 <p className="text-xs font-medium text-slate-700">
@@ -713,7 +753,7 @@ export function BultoPanel({
                     value={bultoEmpresaIdGlobal}
                     onChange={(e) =>
                       setBultoEmpresaIdGlobal(
-                        e.target.value === "" ? "" : Number(e.target.value)
+                        e.target.value === "" ? "" : Number(e.target.value),
                       )
                     }
                   >
@@ -727,9 +767,10 @@ export function BultoPanel({
                   </select>
 
                   <p className="text-[11px] text-slate-500">
-                    Si elegís un bulto acá (o por SKU), en C se usan sus dims
-                    aunque el lote sea PRODUCTO_ESTANDAR. El un/bulto se deriva
-                    con dim_unidad_mm si existe; si falta, cae a catálogo.
+                    En C, si elegís un bulto empresa (global o por SKU), se usan
+                    sus dims aunque el lote sea PRODUCTO_ESTANDAR. El un/bulto
+                    se deriva con dim_unidad_mm si existe; si falta, cae a
+                    catálogo.
                   </p>
 
                   <button
@@ -755,7 +796,6 @@ export function BultoPanel({
                 <ul className="divide-y text-xs">
                   {lote.items.map((it) => {
                     const id = it.tipo_producto_id;
-
                     const chosenBulto =
                       empresaBultos.length > 0
                         ? pickBultoEmpresaForSku(id)
@@ -788,7 +828,6 @@ export function BultoPanel({
                             />
                           </div>
 
-                          {/* Avanzado: override por SKU */}
                           {showAdvanced && empresaBultos.length > 0 ? (
                             <div className="space-y-1">
                               <label className="text-[11px] text-slate-600">
@@ -850,6 +889,7 @@ export function BultoPanel({
           </div>
         )}
       </div>
+
       {/* Columna derecha: Preview */}
       <div className="lg:col-span-7 space-y-4">
         {/* Visor 3D */}
@@ -876,7 +916,7 @@ export function BultoPanel({
             )}
           </div>
 
-          {/* INDICADOR (nuevo) */}
+          {/* Indicador */}
           {layoutForViewer?.placements?.length ? (
             <div className="text-[11px] text-emerald-700">
               Layout listo: {layoutForViewer.placements.length} unidades de
@@ -890,13 +930,13 @@ export function BultoPanel({
             </div>
           )}
 
-          {activeItemForViewer?.dim_bulto_mm ? (
+          {isValidDim(activeItemForViewer?.dim_bulto_mm) ? (
             <BultoViewerFromSnapshot
-              bultoDimMm={activeItemForViewer.dim_bulto_mm}
+              bultoDimMm={activeItemForViewer!.dim_bulto_mm!}
               unidadDimMm={unidadDimForViewer}
-              productoId={activeItemForViewer.tipo_producto_id}
-              codigo={activeItemForViewer.codigo}
-              unidades={activeItemForViewer.unidades_planificadas}
+              productoId={activeItemForViewer!.tipo_producto_id}
+              codigo={activeItemForViewer!.codigo}
+              unidades={activeItemForViewer!.unidades_planificadas}
               placements={layoutForViewer?.placements ?? null}
             />
           ) : (
@@ -944,12 +984,15 @@ export function BultoPanel({
                 disabled={layoutLoading}
                 onClick={async () => {
                   setLayoutError(null);
+                  setApplyError(null);
                   setLayoutLoading(true);
                   try {
                     const res = await previewBultoLayout3D({
-                      loteId: lote.id,
+                      loteId: effectiveLoteId ?? undefined,
+                      simulacionId: typeof simulacionId === "number" ? simulacionId : undefined,
                       snap: active,
                     });
+
 
                     setDraftLayout(res.layout);
                     setDraftKey(selected);
@@ -963,7 +1006,7 @@ export function BultoPanel({
                   } catch (e) {
                     console.error(e);
                     setLayoutError(
-                      "No se pudo generar el layout 3D del bulto."
+                      "No se pudo generar el layout 3D del bulto.",
                     );
                   } finally {
                     setLayoutLoading(false);
@@ -974,25 +1017,91 @@ export function BultoPanel({
                 {layoutLoading ? "Generando layout..." : "Ver layout en visor"}
               </button>
 
-              {/* 2) Aplicar */}
+              {/* 2) Aplicar (solo simulación) */}
               <button
                 type="button"
-                disabled={!canApply}
-                onClick={() => {
-                  // si está habilitado, siempre aplica con layout
-                  const snapToApply = { ...active, layout3d: draftLayout! };
+                disabled={!canApply || applyLoading}
+                onClick={async () => {
+                  if (!draftLayout) return;
 
-                  setAppliedSnap(snapToApply);
-                  onApply(snapToApply);
+                  setApplyError(null);
+                  setApplyLoading(true);
+
+                  try {
+                    const snapToApply = { ...active, layout3d: draftLayout };
+
+                    await applyBultoSnapshotToSimulacion({
+                      simulacionId,
+                      snap: snapToApply,
+                    });
+
+                    setAppliedSnap(snapToApply);
+                    onApply(snapToApply);
+                  } catch (e: any) {
+                    console.error(e);
+                    setApplyError(
+                      e?.message ??
+                      "No se pudo aplicar el snapshot en simulación.",
+                    );
+                  } finally {
+                    setApplyLoading(false);
+                  }
                 }}
                 className="px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Aplicar al workflow
+                {applyLoading ? "Aplicando..." : "Aplicar y continuar"}
               </button>
+
+
+
+              {/* 3) Publicar al lote (simulación + lote) */}
+              {canPublishToLote ? (
+                <button
+                  type="button"
+                  disabled={!canApply || applyLoading}
+                  onClick={async () => {
+                    if (!draftLayout) return;
+
+                    setApplyError(null);
+                    setApplyLoading(true);
+                    console.log("[PUBLICAR] simulacionLoteId =", simulacionLoteId, "lote.id =", lote.id);
+
+                    try {
+                      const snapToApply = { ...active, layout3d: draftLayout };
+
+                      await applyBultoSnapshotToSimulacion({
+                        simulacionId,
+                        snap: snapToApply,
+                      });
+
+                      if (!effectiveLoteId) throw new Error("No hay lote asociado para publicar.");
+
+                      await applyBultoSnapshotToLote({
+                        loteId: effectiveLoteId,
+                        snap: snapToApply,
+                      });
+
+                      setAppliedSnap(snapToApply);
+                      onApply(snapToApply);
+                    } catch (e: any) {
+                      console.error(e);
+                      setApplyError(
+                        e?.message ??
+                        "No se pudo publicar el snapshot al lote.",
+                      );
+                    } finally {
+                      setApplyLoading(false);
+                    }
+                  }}
+                  className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {applyLoading ? "Publicando..." : "Publicar al lote"}
+                </button>
+              ) : null}
             </div>
           </div>
 
-          {/* Hint de estado */}
+          {/* Hint */}
           <p className="text-[11px] text-slate-500">
             {canApply ? (
               <>
@@ -1011,6 +1120,10 @@ export function BultoPanel({
           {layoutError && (
             <p className="text-[11px] text-red-600">{layoutError}</p>
           )}
+
+          {applyError && (
+            <p className="text-[11px] text-red-600">{applyError}</p>
+          )}
         </div>
 
         {/* Vista rápida */}
@@ -1028,19 +1141,23 @@ export function BultoPanel({
                 <li key={it.tipo_producto_id} className="p-3">
                   <p className="font-semibold text-slate-900">{it.codigo}</p>
 
+
+
+
                   <p className="mt-1 text-slate-700">
-                    {it.unidades_planificadas} un plan · {it.cantidad_bultos}{" "}
-                    bultos · {it.unidades_por_bulto} un/bulto
-                    {it.unidades_por_bulto > 0 &&
-                    it.unidades_planificadas % it.unidades_por_bulto !== 0 ? (
+                    Unidades planificadas: {it.unidades_planificadas}
+                    {isParcialRow(it) ? (
                       <span className="text-amber-700">
                         {" "}
                         · parcial ({it.sobrante_unidades} un)
                       </span>
                     ) : null}
                   </p>
-
-                  <p className="mt-1 text-slate-500">
+                  <p className="mt-1 text-slate-700">
+                    Bultos: {it.cantidad_bultos}
+                  </p>
+                  <p className="mt-1 text-slate-700">Capacidad por bulto:{it.unidades_por_bulto}</p>
+                  {/* <p className="mt-1 text-slate-500">
                     Dim bulto: {fmtDim(it.dim_bulto_mm)} ·{" "}
                     <span className="text-[11px]">
                       un/bulto:{" "}
@@ -1059,7 +1176,7 @@ export function BultoPanel({
                         </>
                       ) : null}
                     </span>
-                  </p>
+                  </p> */}
                 </li>
               ))}
             </ul>

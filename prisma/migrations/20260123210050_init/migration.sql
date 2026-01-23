@@ -457,6 +457,8 @@ CREATE TABLE `cubicacion_lote` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `empresa_id` INTEGER NOT NULL,
     `descripcion` VARCHAR(191) NULL,
+    `status` ENUM('BORRADOR', 'SELECCIONADO', 'DESCARTADO') NOT NULL DEFAULT 'BORRADOR',
+    `meta` JSON NULL,
     `unidades_totales` INTEGER NOT NULL DEFAULT 0,
     `bultos_totales` INTEGER NOT NULL DEFAULT 0,
     `packing_policy` ENUM('OPERATIVO_AGRUPADO', 'OPTIMIZAR_VOLUMEN', 'BUSCAR_MEJOR_ACOMODO') NOT NULL DEFAULT 'OPERATIVO_AGRUPADO',
@@ -467,6 +469,7 @@ CREATE TABLE `cubicacion_lote` (
     `bulto_layout` JSON NULL,
 
     INDEX `idx_lote_empresa`(`empresa_id`),
+    INDEX `cubicacion_lote_status_idx`(`status`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -478,13 +481,18 @@ CREATE TABLE `cubicacion_lote_item` (
     `cantidad_unidades` INTEGER NOT NULL,
     `cantidad_bultos` INTEGER NOT NULL DEFAULT 1,
     `unidades_por_bulto` INTEGER NULL,
+    `unidades_en_ultimo_bulto` INTEGER NULL DEFAULT 0,
+    `sobrante_unidades` INTEGER NOT NULL DEFAULT 0,
     `volumen_total_m3` DOUBLE NOT NULL,
     `dim_unidad_mm` JSON NULL,
     `peso_unidad_kg` DOUBLE NULL,
+    `dim_bulto_mm` JSON NULL,
+    `bulto_fuente` ENUM('CATALOGO', 'OPERATIVO', 'EMPRESA_BULTO') NOT NULL DEFAULT 'CATALOGO',
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
     INDEX `idx_lote_item`(`lote_id`),
     INDEX `cubicacion_lote_item_tipo_producto_id_idx`(`tipo_producto_id`),
+    INDEX `idx_lote_item_bulto_fuente`(`bulto_fuente`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -500,12 +508,14 @@ CREATE TABLE `cubicacion_pallet_plan` (
     `ocupacion_volumen_pct` DECIMAL(5, 2) NOT NULL,
     `peso_total_kg` DOUBLE NOT NULL,
     `altura_utilizada_mm` INTEGER NOT NULL,
+    `simulacion_id` INTEGER NULL,
     `layout` JSON NOT NULL,
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at` DATETIME(3) NOT NULL,
     `candidate_key` ENUM('A', 'B', 'C') NOT NULL DEFAULT 'A',
 
     INDEX `idx_pallet_plan_lote`(`lote_id`),
+    INDEX `cubicacion_pallet_plan_simulacion_id_idx`(`simulacion_id`),
     UNIQUE INDEX `uq_lote_contenedor_candidate`(`lote_id`, `tipo_contenedor_id`, `candidate_key`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -523,6 +533,7 @@ CREATE TABLE `cubicacion_camion_plan` (
     `peso_total_kg` DOUBLE NOT NULL,
     `ocupacion_base_pct` DECIMAL(6, 2) NOT NULL,
     `layout` JSON NOT NULL,
+    `simulacion_id` INTEGER NULL,
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at` DATETIME(3) NOT NULL,
 
@@ -530,6 +541,73 @@ CREATE TABLE `cubicacion_camion_plan` (
     INDEX `cubicacion_camion_plan_transporte_id_idx`(`transporte_id`),
     INDEX `cubicacion_camion_plan_lote_id_transporte_id_idx`(`lote_id`, `transporte_id`),
     INDEX `cubicacion_camion_plan_status_idx`(`status`),
+    INDEX `cubicacion_camion_plan_simulacion_id_idx`(`simulacion_id`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `cubicacion_simulacion` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `empresa_id` INTEGER NOT NULL,
+    `lote_id` INTEGER NULL,
+    `titulo` VARCHAR(191) NULL,
+    `descripcion` VARCHAR(191) NULL,
+    `status` ENUM('BORRADOR', 'SELECCIONADO', 'DESCARTADO') NOT NULL DEFAULT 'BORRADOR',
+    `unidades_totales` INTEGER NOT NULL DEFAULT 0,
+    `bultos_totales` INTEGER NOT NULL DEFAULT 0,
+    `meta` JSON NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL,
+
+    INDEX `cubicacion_simulacion_empresa_id_idx`(`empresa_id`),
+    INDEX `cubicacion_simulacion_lote_id_idx`(`lote_id`),
+    INDEX `cubicacion_simulacion_status_idx`(`status`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `cubicacion_producto_plan` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `simulacion_id` INTEGER NOT NULL,
+    `tipo_producto_id` INTEGER NULL,
+    `codigo` VARCHAR(191) NOT NULL,
+    `descripcion` VARCHAR(191) NULL,
+    `cantidad_unidades` INTEGER NOT NULL DEFAULT 0,
+    `cantidad_bultos` INTEGER NOT NULL DEFAULT 0,
+    `unidades_por_bulto` INTEGER NULL,
+    `unidades_en_ultimo_bulto` INTEGER NULL DEFAULT 0,
+    `sobrante_unidades` INTEGER NOT NULL DEFAULT 0,
+    `dim_unidad_mm` JSON NULL,
+    `peso_unidad_kg` DOUBLE NULL,
+    `dim_bulto_mm` JSON NULL,
+    `peso_bulto_kg` DOUBLE NULL,
+    `volumen_total_m3` DOUBLE NOT NULL DEFAULT 0,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL,
+    `cubicacionLoteId` INTEGER NULL,
+
+    INDEX `cubicacion_producto_plan_simulacion_id_idx`(`simulacion_id`),
+    INDEX `cubicacion_producto_plan_tipo_producto_id_idx`(`tipo_producto_id`),
+    UNIQUE INDEX `uq_producto_plan_simulacion_codigo`(`simulacion_id`, `codigo`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `cubicacion_bulto_plan` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `simulacion_id` INTEGER NOT NULL,
+    `lote_id` INTEGER NULL,
+    `tipo_bulto` ENUM('PRODUCTO_ESTANDAR', 'EMPRESA_BULTO') NOT NULL DEFAULT 'EMPRESA_BULTO',
+    `bulto_empresa_id` INTEGER NULL,
+    `unidades_totales` INTEGER NOT NULL DEFAULT 0,
+    `bultos_totales` INTEGER NOT NULL DEFAULT 0,
+    `status` ENUM('BORRADOR', 'SELECCIONADO', 'DESCARTADO') NOT NULL DEFAULT 'BORRADOR',
+    `layout` JSON NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL,
+
+    INDEX `cubicacion_bulto_plan_simulacion_id_idx`(`simulacion_id`),
+    INDEX `cubicacion_bulto_plan_status_idx`(`status`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -663,7 +741,37 @@ ALTER TABLE `cubicacion_pallet_plan` ADD CONSTRAINT `cubicacion_pallet_plan_lote
 ALTER TABLE `cubicacion_pallet_plan` ADD CONSTRAINT `cubicacion_pallet_plan_tipo_contenedor_id_fkey` FOREIGN KEY (`tipo_contenedor_id`) REFERENCES `tipo_contenedor`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE `cubicacion_pallet_plan` ADD CONSTRAINT `cubicacion_pallet_plan_simulacion_id_fkey` FOREIGN KEY (`simulacion_id`) REFERENCES `cubicacion_simulacion`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_camion_plan` ADD CONSTRAINT `cubicacion_camion_plan_simulacion_id_fkey` FOREIGN KEY (`simulacion_id`) REFERENCES `cubicacion_simulacion`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE `cubicacion_camion_plan` ADD CONSTRAINT `cubicacion_camion_plan_lote_id_fkey` FOREIGN KEY (`lote_id`) REFERENCES `cubicacion_lote`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `cubicacion_camion_plan` ADD CONSTRAINT `cubicacion_camion_plan_transporte_id_fkey` FOREIGN KEY (`transporte_id`) REFERENCES `transporte_clasificacion`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_simulacion` ADD CONSTRAINT `cubicacion_simulacion_empresa_id_fkey` FOREIGN KEY (`empresa_id`) REFERENCES `empresa`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_simulacion` ADD CONSTRAINT `cubicacion_simulacion_lote_id_fkey` FOREIGN KEY (`lote_id`) REFERENCES `cubicacion_lote`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_producto_plan` ADD CONSTRAINT `cubicacion_producto_plan_simulacion_id_fkey` FOREIGN KEY (`simulacion_id`) REFERENCES `cubicacion_simulacion`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_producto_plan` ADD CONSTRAINT `cubicacion_producto_plan_tipo_producto_id_fkey` FOREIGN KEY (`tipo_producto_id`) REFERENCES `tipo_producto`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_producto_plan` ADD CONSTRAINT `cubicacion_producto_plan_cubicacionLoteId_fkey` FOREIGN KEY (`cubicacionLoteId`) REFERENCES `cubicacion_lote`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_bulto_plan` ADD CONSTRAINT `cubicacion_bulto_plan_simulacion_id_fkey` FOREIGN KEY (`simulacion_id`) REFERENCES `cubicacion_simulacion`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_bulto_plan` ADD CONSTRAINT `cubicacion_bulto_plan_lote_id_fkey` FOREIGN KEY (`lote_id`) REFERENCES `cubicacion_lote`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_bulto_plan` ADD CONSTRAINT `cubicacion_bulto_plan_bulto_empresa_id_fkey` FOREIGN KEY (`bulto_empresa_id`) REFERENCES `empresa_bulto`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;

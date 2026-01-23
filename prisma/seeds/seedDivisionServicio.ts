@@ -925,6 +925,10 @@ export async function seedDivisionServicio(prisma: PrismaClient) {
     },
   ];
 
+  await prisma.$executeRawUnsafe("SET FOREIGN_KEY_CHECKS = 0;");
+
+  console.log("🧹 Limpiando tablas antes de re-seedear...");
+
   // Opcional en dev: vaciar para poder re-seedear sin conflictos
   await prisma.transporteClasificacion.deleteMany();
   await prisma.tipoProducto.deleteMany();
@@ -933,6 +937,12 @@ export async function seedDivisionServicio(prisma: PrismaClient) {
   await prisma.tipoUnidadMedidaEntrega.deleteMany();
   await prisma.tipoUnidadMedida.deleteMany();
   await prisma.divisionServicio.deleteMany();
+
+  // 2. Volver a activar los chequeos
+  await prisma.$executeRawUnsafe("SET FOREIGN_KEY_CHECKS = 1;");
+
+  // 3) Proceder con la creación...
+  console.log("🌱 Iniciando la creación de registros...");
 
   // 1) Crear divisiones de servicio
   const divisionEntities = await prisma.$transaction(
@@ -1035,7 +1045,7 @@ export async function seedDivisionServicio(prisma: PrismaClient) {
         mt_total_cub: 0,
         max_peso_kg: clasificacionData.pesoKg ?? 0,
         max_peso_lt:
-          division.codigo === "LIQUIDO" ? clasificacionData.pesoKg ?? 0 : 0,
+          division.codigo === "LIQUIDO" ? (clasificacionData.pesoKg ?? 0) : 0,
         max_peso_xmt3: 0,
         pallet_europaleta_total: clasificacionData.europaleta ?? 0,
         pallet_ariog_total: clasificacionData.arlog?.toString() ?? "",
