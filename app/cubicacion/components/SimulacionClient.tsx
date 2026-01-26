@@ -10,6 +10,10 @@ import { useRouter } from "next/navigation";
 import { CamionClientSimV2 } from "./CamionClientSimV";
 import { PalletClientV2 } from "./PalletClientV2";
 
+/* =========================
+   Types
+========================= */
+
 type EmpresaBulto = {
   id: number;
   empresa_id: number;
@@ -128,6 +132,10 @@ function pill(text: string) {
   );
 }
 
+/* =========================
+   Component
+========================= */
+
 export function SimulacionClient({
   simulacionId,
   simulacionLoteId,
@@ -162,6 +170,8 @@ export function SimulacionClient({
     cantidad_unidades: number;
     tipo_producto_id?: number | null;
   }>;
+
+  // IMPORTANT: server action to sync producto_plan -> lote_item before going to Bulto
   onContinuarABulto: () => Promise<void>;
 
   onSearchTipoProducto: (params: { q: string }) => Promise<
@@ -179,11 +189,11 @@ export function SimulacionClient({
     }>
   >;
 
-  // IMPORTANTE: compatible con tu action (unknown + opcionales)
   onUpsertProductoPlan: (params: {
     codigo: string;
     cantidad_unidades: number;
     tipo_producto_id?: number | null;
+
     dim_unidad_mm?: any | null;
     largo_unidad_mm?: unknown;
     ancho_unidad_mm?: unknown;
@@ -201,15 +211,17 @@ export function SimulacionClient({
   }) => Promise<{ camionPlanId: number }>;
 }) {
   const router = useRouter();
+
   // === Workflow state
   const [bultoSnap, setBultoSnap] = useState<BultoSimSnapshot | null>(null);
   const [step, setStep] = useState<0 | 1 | 2 | 3>(0);
   const [palletPlanId, setPalletPlanId] = useState<number | null>(null);
 
-  // === Step 0: buscador (siempre disponible)
+  // === Step 0: buscador
   const [q, setQ] = useState("");
   const [results, setResults] = useState<any[]>([]);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, startTransition] = useTransition(); // buscar / upsert
+  const [isSyncing, startSync] = useTransition(); // continuar a bulto
 
   const hasProductos =
     (productosPlan?.length ?? 0) > 0 || (lote?.items?.length ?? 0) > 0;
@@ -256,7 +268,14 @@ export function SimulacionClient({
     };
   }, [lote, bultoSnap]);
 
-  onContinuarABulto
+  // ✅ Sync + refresh + go to step 1
+  const handleContinuarABulto = () => {
+    startSync(async () => {
+      await onContinuarABulto(); // server action: asegura lote + sync items
+      router.refresh(); // recarga datos del server (lote.items)
+      setStep(1); // ir a Bulto
+    });
+  };
 
   const handlePreviewCamion = (params: { transporteId: number }) => {
     return onPreviewCamion(params);
@@ -345,7 +364,11 @@ export function SimulacionClient({
                           : "text-slate-600"
                       }
                     >
-                      {hasBulto ? "Aplicado" : hasProductos ? "Listo" : "Bloqueado"}
+                      {hasBulto
+                        ? "Aplicado"
+                        : hasProductos
+                        ? "Listo"
+                        : "Bloqueado"}
                     </span>
                   </span>
 
@@ -384,7 +407,7 @@ export function SimulacionClient({
                   </span>
                 </div>
 
-                {hasBulto && (
+                {hasBulto && bultoSnap && (
                   <p className="text-[11px] text-slate-500">
                     Escenario activo:{" "}
                     <span className="font-medium text-slate-700">
@@ -590,6 +613,7 @@ export function SimulacionClient({
                                         ? null
                                         : Number(fd.get("peso_unidad_kg")),
                                   });
+
                                   router.refresh();
                                 }}
                                 className="grid gap-2 md:grid-cols-6 md:items-end"
@@ -679,10 +703,10 @@ export function SimulacionClient({
                     <button
                       type="button"
                       className="px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 text-sm disabled:opacity-50"
-                      disabled={!hasProductos}
-                      onClick={() => setStep(1)}
+                      disabled={!hasProductos || isSyncing}
+                      onClick={handleContinuarABulto}
                     >
-                      Continuar a Bulto
+                      {isSyncing ? "Sincronizando..." : "Continuar a Bulto"}
                     </button>
                   </div>
 

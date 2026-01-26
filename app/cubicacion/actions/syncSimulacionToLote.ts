@@ -42,7 +42,6 @@ export async function syncSimulacionToLote(params: { simulacionId: number }) {
       data: productos.map((p: any) => ({
         lote_id: loteId,
         tipo_producto_id: p.tipo_producto_id ?? null,
-        codigo: p.codigo,
         cantidad_unidades: Number(p.cantidad_unidades ?? 0),
         cantidad_bultos: 0,
         unidades_por_bulto: null,
