@@ -5,7 +5,6 @@ import { calcularPalletPlan } from "../lib/packing-pallet";
 
 /* =========================
    Types (server-safe)
-   (NO import desde BultoPanel: es client)
 ========================= */
 
 type SourceTag =
@@ -19,7 +18,7 @@ type SourceTag =
 type DimMm = { largo: number; ancho: number; alto: number };
 
 type BultoSimSnapshot = {
-  candidateKey: "A" | "B" | "C";
+  candidateKey: "A" | "B" | "C" | "D";
   titulo: string;
   scope?: "LOTE" | "SKU";
   warnings?: string[];
@@ -68,6 +67,16 @@ function isValidDimMm(d: { largo: number; ancho: number; alto: number }) {
   return d.largo > 0 && d.ancho > 0 && d.alto > 0;
 }
 
+function dimFromAny(v: any): DimMm | null {
+  if (!v) return null;
+  const d = {
+    largo: toNumber(v.largo ?? v.largo_mm ?? v.l, 0),
+    ancho: toNumber(v.ancho ?? v.ancho_mm ?? v.a, 0),
+    alto: toNumber(v.alto ?? v.alto_mm ?? v.h, 0),
+  };
+  return isValidDimMm(d) ? d : null;
+}
+
 /* =========================
    Main
 ========================= */
@@ -76,15 +85,29 @@ export async function previewPalletPlan(params: {
   empresaId: number;
   loteId: number;
   tipoContenedorId: number;
-  mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
-  objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
 
-  // legacy (tu UI actual)
-  objetivoUnidades?: number; // bultos objetivo (según tu UI)
-  objetivoOcupacion?: number; // 0..1 (tu UI ya lo manda /100)
+  mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
+
+  // ✅ Nuevo: solo 2 modos (sin duplicados)
+  objective: "OPERATIVO_ESTABLE" | "OPERATIVO_PARAMETRIZABLE";
+
+  // ✅ Feature independiente del objective
+  rotacion2D?: "ON" | "OFF";
+
+  // ✅ Modo PRO: parámetros opcionales (solo se usan si objective=OPERATIVO_PARAMETRIZABLE)
+  parametros?: {
+    limiteBultos?: number | null; // override del objetivo de bultos (clamp a supply real)
+    limiteCapas?: number | null; // 1..N (clamp a altura/pallet)
+    objetivoOcupacion01?: number | null; // 0..1
+    apilableOverride?: boolean | null; // false => forzar NO apilable (max 1 capa)
+  } | null;
+
+  // legacy — mantenemos por compatibilidad
+  objetivoUnidades?: number; // bultos
+  objetivoOcupacion?: number; // 0..1
   modoSimulacion?: boolean;
 
-  // NUEVO (V2): viene de SimulacionClient cuando aplicás el bulto
+  // V2 snapshot aplicado desde simulación de bulto
   bultoSnapshot?: BultoSimSnapshot;
 }) {
   const {
@@ -93,13 +116,15 @@ export async function previewPalletPlan(params: {
     tipoContenedorId,
     mixPolicy,
     objective,
+    rotacion2D,
+    parametros,
     objetivoUnidades,
     objetivoOcupacion,
     modoSimulacion,
     bultoSnapshot,
   } = params;
 
-  // 1) Cargar contenedor + lote (snake_case)
+  // 1) Cargar contenedor + lote
   const [contenedor, lote] = await Promise.all([
     prisma.tipoContenedor.findUnique({ where: { id: tipoContenedorId } }),
     prisma.cubicacionLote.findUnique({
@@ -118,7 +143,7 @@ export async function previewPalletPlan(params: {
   if (!lote) throw new Error("Lote inexistente.");
   if (!lote.items?.length) throw new Error("El lote no tiene ítems.");
 
-  // 2) Validar dimensiones del contenedor (pueden venir null)
+  // 2) Validar dimensiones del contenedor
   const largoM = toNumber(contenedor.largo_mts, 0);
   const anchoM = toNumber(contenedor.ancho_mts, 0);
   const altoM = toNumber(contenedor.alto_mts, 0);
@@ -127,7 +152,7 @@ export async function previewPalletPlan(params: {
   requirePositive(anchoM, "El contenedor no tiene ancho_mts válido.");
   requirePositive(altoM, "El contenedor no tiene alto_mts válido.");
 
-  // 3) Regla operativa (ejemplo actual)
+  // 3) Regla operativa (global)
   const regla = await prisma.cubicacionRegla.findFirst({
     where: {
       empresaId,
@@ -138,15 +163,30 @@ export async function previewPalletPlan(params: {
     orderBy: { id: "desc" },
   });
 
-  // 4) Resolver bulto empresa efectivo (si el snapshot eligió otro bulto)
+  // 4) Resolver bulto empresa efectivo (si EMPRESA_BULTO)
   let bultoEmpresaEf = lote.bulto_empresa ?? null;
 
+  const snapBultoIds = new Set<number>();
+  for (const s of bultoSnapshot?.items ?? []) {
+    const id = s.audit?.bultoEmpresaId;
+    if (typeof id === "number" && Number.isFinite(id) && id > 0)
+      snapBultoIds.add(id);
+  }
+
   const snapBultoId =
-    bultoSnapshot?.items?.find((x) => x.audit?.bultoEmpresaId)?.audit
-      ?.bultoEmpresaId ?? null;
+    snapBultoIds.size === 1 ? Array.from(snapBultoIds)[0] : null;
 
   if (lote.tipo_bulto === "EMPRESA_BULTO") {
-    if (snapBultoId && (!bultoEmpresaEf || bultoEmpresaEf.id !== snapBultoId)) {
+    if (snapBultoIds.size > 1) {
+      throw new Error(
+        `Snapshot trae múltiples bultoEmpresaId (${Array.from(snapBultoIds).join(",")}). En modo EMPRESA_BULTO operamos con 1 solo bulto global.`,
+      );
+    }
+
+    if (
+      snapBultoId &&
+      (!bultoEmpresaEf || (bultoEmpresaEf as any).id !== snapBultoId)
+    ) {
       const b = await prisma.empresaBulto.findFirst({
         where: {
           id: snapBultoId,
@@ -155,53 +195,47 @@ export async function previewPalletPlan(params: {
           deleted_at: null,
         },
       });
+
       if (!b) {
         throw new Error(
-          `Snapshot eligió empresa_bulto_id=${snapBultoId} pero no existe / no está habilitado para empresa ${empresaId}.`
+          `Snapshot eligió empresa_bulto_id=${snapBultoId} pero no existe / no está habilitado para empresa ${empresaId}.`,
         );
       }
+
       bultoEmpresaEf = b as any;
     }
 
     if (!bultoEmpresaEf) {
       throw new Error(
-        "El lote es EMPRESA_BULTO pero no tiene bulto_empresa asociado (bulto_empresa_id) y el snapshot no proveyó uno válido."
+        "El lote es EMPRESA_BULTO pero no tiene bulto_empresa asociado y el snapshot no proveyó uno válido.",
       );
     }
   }
 
-  // 5) Map snapshot por tipo_producto_id (si viene)
+  // 5) Map snapshot por tipo_producto_id
   const snapByTipoProd = new Map<number, BultoSimSnapshot["items"][number]>();
   if (bultoSnapshot?.items?.length) {
     for (const s of bultoSnapshot.items)
       snapByTipoProd.set(s.tipo_producto_id, s);
   }
 
-  // 6) Armado de items para el cálculo
+  // 6) Armado de items
   const items = lote.items.map((it) => {
     const tp = it.tipo_producto;
+
     const codigo = String(tp.codigo ?? `PROD-${it.tipo_producto_id}`).trim();
     const descripcion = String(tp.descripcion ?? "");
 
-    // =========================
-    // DEMANDA (unidades)
-    // - si hay snapshot aplicado, usamos unidades_planificadas
-    // - sino, usamos cantidad_unidades del lote
-    // =========================
     const snap = snapByTipoProd.get(it.tipo_producto_id) ?? null;
 
+    // DEMANDA
     const unidades = snap
       ? toNumber(snap.unidades_planificadas, 0)
-      : toNumber(it.cantidad_unidades, 0);
+      : toNumber((it as any).cantidad_unidades, 0);
 
     requirePositive(unidades, `Item ${codigo}: cantidad_unidades inválida.`);
 
-    // =========================
-    // PACKAGING (unidades por bulto + bultos)
-    // - si hay snapshot aplicado, usamos unidades_por_bulto y cantidad_bultos
-    // - sino, usamos snapshot DB (it.unidades_por_bulto / it.cantidad_bultos)
-    //   y fallback a catálogo
-    // =========================
+    // PACKAGING
     let unidadesPorBulto: number;
     let cantidadBultos: number;
 
@@ -210,20 +244,22 @@ export async function previewPalletPlan(params: {
       cantidadBultos = Math.max(1, toNumber(snap.cantidad_bultos, 1));
     } else {
       const unidadesPorBultoSnapshot =
-        it.unidades_por_bulto != null && toNumber(it.unidades_por_bulto, 0) > 0
-          ? toNumber(it.unidades_por_bulto, 0)
+        (it as any).unidades_por_bulto != null &&
+        toNumber((it as any).unidades_por_bulto, 0) > 0
+          ? toNumber((it as any).unidades_por_bulto, 0)
           : null;
 
       const unidadesPorBultoFallback = Math.max(
         1,
-        toNumber(tp.unidad_entra_por_bulto, 1)
+        toNumber((tp as any).unidad_entra_por_bulto, 1),
       );
 
       unidadesPorBulto = unidadesPorBultoSnapshot ?? unidadesPorBultoFallback;
 
       const cantidadBultosSnapshot =
-        it.cantidad_bultos != null && toNumber(it.cantidad_bultos, 0) > 0
-          ? toNumber(it.cantidad_bultos, 0)
+        (it as any).cantidad_bultos != null &&
+        toNumber((it as any).cantidad_bultos, 0) > 0
+          ? toNumber((it as any).cantidad_bultos, 0)
           : 0;
 
       cantidadBultos =
@@ -233,51 +269,73 @@ export async function previewPalletPlan(params: {
 
       requirePositive(
         cantidadBultos,
-        `Item ${codigo}: no se pudo determinar cantidad_bultos.`
+        `Item ${codigo}: no se pudo determinar cantidad_bultos.`,
       );
     }
 
-    // =========================
-    // DIM BULT0
-    // - EMPRESA_BULTO: del bulto empresa efectivo (snapshot puede cambiar bulto)
-    // - PRODUCTO_ESTANDAR: del catálogo del producto
-    // =========================
-    const dimBultoMm =
-      lote.tipo_bulto === "EMPRESA_BULTO"
+    // DIM BULT0 (regla profesional)
+    // - EMPRESA_BULTO: SIEMPRE dim del bulto empresa (global), ignorar dimSnap / dimDb / catálogo
+    // - PRODUCTO_ESTANDAR: preferimos snap/db y fallback a catálogo
+    const dimSnap = dimFromAny(snap?.dim_bulto_mm);
+    const dimDb = dimFromAny((it as any).dim_bulto_mm);
+
+    const dimFromEmpresa =
+      (lote as any).tipo_bulto === "EMPRESA_BULTO"
         ? {
             largo: toNumber((bultoEmpresaEf as any)!.largo_mm, 0),
             ancho: toNumber((bultoEmpresaEf as any)!.ancho_mm, 0),
             alto: toNumber((bultoEmpresaEf as any)!.alto_mm, 0),
           }
-        : {
-            largo: toNumber(tp.largo_por_bulto, 0),
-            ancho: toNumber(tp.ancho_por_bulto, 0),
-            alto: toNumber(tp.alto_por_bulto, 0),
-          };
+        : null;
 
-    if (!isValidDimMm(dimBultoMm)) {
+    const dimFromCatalogo =
+      (lote as any).tipo_bulto !== "EMPRESA_BULTO"
+        ? {
+            largo: toNumber((tp as any).largo_por_bulto, 0),
+            ancho: toNumber((tp as any).ancho_por_bulto, 0),
+            alto: toNumber((tp as any).alto_por_bulto, 0),
+          }
+        : null;
+
+    const dimBultoMm: DimMm | null =
+      (lote as any).tipo_bulto === "EMPRESA_BULTO"
+        ? dimFromEmpresa && isValidDimMm(dimFromEmpresa)
+          ? dimFromEmpresa
+          : null
+        : (dimSnap ??
+          dimDb ??
+          (dimFromCatalogo && isValidDimMm(dimFromCatalogo)
+            ? dimFromCatalogo
+            : null));
+
+    if (!dimBultoMm || !isValidDimMm(dimBultoMm)) {
       throw new Error(
-        `El producto ${codigo} no tiene dimensiones de bulto válidas.`
+        `El producto ${codigo} no tiene dimensiones de bulto válidas.`,
       );
     }
 
-    // Peso bulto: preferimos peso_por_bulto; si no, estimamos desde peso unidad * unidadesPorBulto
+    // PESO
     const pesoPorBulto =
-      tp.peso_por_bulto != null ? toNumber(tp.peso_por_bulto, 0) : 0;
+      (tp as any).peso_por_bulto != null
+        ? toNumber((tp as any).peso_por_bulto, 0)
+        : 0;
 
     const pesoUnidad =
-      it.peso_unidad_kg != null
-        ? toNumber(it.peso_unidad_kg, 0)
-        : tp.peso_por_unidad_entrega != null
-        ? toNumber(tp.peso_por_unidad_entrega, 0)
-        : tp.peso_por_unidad_venta != null
-        ? toNumber(tp.peso_por_unidad_venta, 0)
-        : 0;
+      (it as any).peso_unidad_kg != null
+        ? toNumber((it as any).peso_unidad_kg, 0)
+        : (tp as any).peso_por_unidad_entrega != null
+          ? toNumber((tp as any).peso_por_unidad_entrega, 0)
+          : (tp as any).peso_por_unidad_venta != null
+            ? toNumber((tp as any).peso_por_unidad_venta, 0)
+            : 0;
 
     const pesoBultoKg =
       pesoPorBulto > 0
         ? pesoPorBulto
         : Math.max(0, pesoUnidad) * unidadesPorBulto;
+
+    // ✅ apilable robusto (tinyint 0/1)
+    const apilable = Boolean((tp as any).apilable);
 
     return {
       tipoProductoId: it.tipo_producto_id,
@@ -286,36 +344,17 @@ export async function previewPalletPlan(params: {
       cantidadBultos,
       dimBultoMm,
       pesoBultoKg,
+      apilable,
     };
   });
 
-  // 7) Objetivos (legacy)
-  const parsedObjetivoUnidades =
-    objetivoUnidades != null && toNumber(objetivoUnidades, 0) > 0
-      ? toNumber(objetivoUnidades, 0)
-      : undefined;
-
-  const parsedObjetivoOcupacion =
-    objetivoOcupacion != null ? Number(objetivoOcupacion) : undefined;
-
-  if (
-    parsedObjetivoOcupacion != null &&
-    (parsedObjetivoOcupacion < 0 || parsedObjetivoOcupacion > 1)
-  ) {
-    throw new Error(
-      "El objetivo de ocupación debe estar entre 0 y 1 (ej: 0.50)."
-    );
-  }
-
-  // 8) Supply de bultos: para V2 tomamos el supply del snapshot aplicado (items)
-  // (si no hay snapshot, queda igual que antes: sumatoria por items; lote.bultos_totales puede ser viejo)
+  // 7) Supply real (preferimos items)
   const bultosFromItems = items.reduce(
     (acc, it) => acc + toNumber(it.cantidadBultos, 0),
-    0
+    0,
   );
-  const bultosFromLote = toNumber(lote.bultos_totales, 0);
+  const bultosFromLote = toNumber((lote as any).bultos_totales, 0);
 
-  // Preferimos items (porque representa lo que vamos a colocar), y dejamos lote como fallback.
   const bultosDisponibles =
     bultosFromItems > 0 ? bultosFromItems : bultosFromLote;
 
@@ -323,22 +362,83 @@ export async function previewPalletPlan(params: {
     throw new Error("No se pudo determinar bultosDisponibles del lote.");
   }
 
-  // Objetivo efectivo: nunca puede superar el supply
+  // 8) Objetivos: prioridad PRO > legacy > supply
+
+  // legacy objetivo unidades
+  const legacyLimiteBultos =
+    objetivoUnidades != null && toNumber(objetivoUnidades, 0) > 0
+      ? toNumber(objetivoUnidades, 0)
+      : null;
+
+  // PRO límite bultos
+  const proLimiteBultos =
+    parametros?.limiteBultos != null && toNumber(parametros.limiteBultos, 0) > 0
+      ? toNumber(parametros.limiteBultos, 0)
+      : null;
+
   const objetivoUnidadesEfectivo = Math.min(
-    parsedObjetivoUnidades ?? bultosDisponibles,
-    bultosDisponibles
+    proLimiteBultos ?? legacyLimiteBultos ?? bultosDisponibles,
+    bultosDisponibles,
   );
 
-  // Modo simulación efectivo:
-  // - si tu UI lo manda, lo respetamos
-  // - si NO lo manda, igual lo activamos para aplicar límite duro de supply (lo que venís usando)
+  // ocupación 0..1: prioridad PRO > legacy
+  const legacyObjOcup =
+    objetivoOcupacion != null ? Number(objetivoOcupacion) : null;
+
+  const proObjOcup =
+    parametros?.objetivoOcupacion01 != null
+      ? Number(parametros.objetivoOcupacion01)
+      : null;
+
+  const objetivoOcupacion01Efectivo = proObjOcup ?? legacyObjOcup ?? undefined;
+
+  if (
+    objetivoOcupacion01Efectivo != null &&
+    (objetivoOcupacion01Efectivo < 0 || objetivoOcupacion01Efectivo > 1)
+  ) {
+    throw new Error(
+      "El objetivo de ocupación debe estar entre 0 y 1 (ej: 0.50).",
+    );
+  }
+
+  // ✅ rotación 2D default profesional:
+  // - OPERATIVO_ESTABLE: OFF sí o sí
+  // - PARAM: respeta lo que venga (default OFF)
+  const rotacion2DEfectiva: "ON" | "OFF" =
+    objective === "OPERATIVO_ESTABLE" ? "OFF" : (rotacion2D ?? "OFF");
+
+  // ✅ modo simulación: por tu flujo lo dejamos default true
   const modoSimulacionEfectivo = modoSimulacion ?? true;
 
-  // ✅ Consoles (preview)
+  // ✅ parámetros PRO que realmente usa el motor
+  const parametrosMotor =
+    objective === "OPERATIVO_PARAMETRIZABLE"
+      ? {
+          // el motor NO usa limiteBultos hoy (lo usamos afuera como objetivoUnidades)
+          limiteCapas:
+            parametros?.limiteCapas != null &&
+            toNumber(parametros.limiteCapas, 0) > 0
+              ? Math.floor(toNumber(parametros.limiteCapas, 0))
+              : null,
+          objetivoOcupacion01: objetivoOcupacion01Efectivo ?? null,
+          apilableOverride:
+            typeof parametros?.apilableOverride === "boolean"
+              ? parametros.apilableOverride
+              : null,
+        }
+      : null;
+
+  // ✅ MixPolicy efectiva (regla profesional)
+  // En OPERATIVO_ESTABLE con múltiples SKUs, no permitimos mezcla.
+  const multiSku = items.filter((x) => x.cantidadBultos > 0).length > 1;
+
+  const mixPolicyEfectiva: "NO_MEZCLAR" | "PERMITIR_MEZCLA" =
+    objective === "OPERATIVO_ESTABLE" && multiSku ? "NO_MEZCLAR" : mixPolicy;
+
   console.log("PREVIEW_PALLET :: LOTE", {
     loteId: lote.id,
-    tipo_bulto: lote.tipo_bulto,
-    bulto_empresa_id: lote.bulto_empresa_id,
+    tipo_bulto: (lote as any).tipo_bulto,
+    bulto_empresa_id: (lote as any).bulto_empresa_id,
     bulto_empresa_ef: bultoEmpresaEf
       ? {
           id: (bultoEmpresaEf as any).id,
@@ -359,9 +459,15 @@ export async function previewPalletPlan(params: {
       bultosFromItems,
       bultosFromLote,
       bultosDisponibles,
-      parsedObjetivoUnidades,
       objetivoUnidadesEfectivo,
+      modoSimulacionEfectivo,
+      objective,
+      rotacion2DEfectiva,
+      parametrosMotor,
     },
+    mixPolicyInput: mixPolicy,
+    mixPolicyEfectiva,
+    multiSku,
   });
 
   console.log(
@@ -371,7 +477,8 @@ export async function previewPalletPlan(params: {
       cantidadBultos: x.cantidadBultos,
       dimBultoMm: x.dimBultoMm,
       pesoBultoKg: x.pesoBultoKg,
-    }))
+      apilable: x.apilable,
+    })),
   );
 
   // 9) Calcular plan
@@ -387,22 +494,23 @@ export async function previewPalletPlan(params: {
     },
     reglas: regla
       ? {
-          maxAlturaM: regla.maxAlturaM ? Number(regla.maxAlturaM) : null,
-          maxCodigosPorPallet: regla.maxCodigosPorPallet ?? null,
-          permitirMezcla: regla.permitirMezcla,
+          maxAlturaM: (regla as any).maxAlturaM
+            ? Number((regla as any).maxAlturaM)
+            : null,
+          maxCodigosPorPallet: (regla as any).maxCodigosPorPallet ?? null,
+          permitirMezcla: (regla as any).permitirMezcla,
         }
       : null,
-    mixPolicy,
+    mixPolicy: mixPolicyEfectiva,
     objective,
+    rotacion2D: rotacion2DEfectiva,
+    parametros: parametrosMotor,
     items,
 
-    // objetivos + modo simulación (limitador de supply)
+    // legacy (el motor lo usa para cortes)
     objetivoUnidades: objetivoUnidadesEfectivo,
-    objetivoOcupacion: parsedObjetivoOcupacion,
+    objetivoOcupacion: objetivoOcupacion01Efectivo,
     modoSimulacion: modoSimulacionEfectivo,
-
-    // (opcional) referencias para debugging: si tu motor ya lo devuelve, genial.
-    // Si no, no pasa nada.
   });
 
   return { plan };

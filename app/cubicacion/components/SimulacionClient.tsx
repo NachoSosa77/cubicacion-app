@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 
 import { BultoPanel } from "../simulacion/[simulacionId]/BultoPanel";
 import { BultoSimSnapshot } from "../simulacion/types/types";
 import { BultoPanelSim } from "./BultoPanelSim";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { CamionClientSimV2 } from "./CamionClientSimV";
 import { PalletClientV2 } from "./PalletClientV2";
 
@@ -146,6 +146,7 @@ export function SimulacionClient({
   transportes,
   palletSummary,
   productosPlan,
+  initialStep,
   // Actions
   onSearchTipoProducto,
   onUpsertProductoPlan,
@@ -154,6 +155,7 @@ export function SimulacionClient({
   onContinuarABulto,
 }: {
   simulacionId: number;
+  initialStep?: string | null;
   simulacionLoteId: number | null;
   empresaId: number;
   lote: ClientLote | null;
@@ -211,10 +213,12 @@ export function SimulacionClient({
   }) => Promise<{ camionPlanId: number }>;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // === Workflow state
   const [bultoSnap, setBultoSnap] = useState<BultoSimSnapshot | null>(null);
   const [step, setStep] = useState<0 | 1 | 2 | 3>(0);
+  const appliedRef = useRef(false);
   const [palletPlanId, setPalletPlanId] = useState<number | null>(null);
 
   // === Step 0: buscador
@@ -267,6 +271,28 @@ export function SimulacionClient({
       }),
     };
   }, [lote, bultoSnap]);
+
+   useEffect(() => {
+    if (appliedRef.current) return;
+    if (!initialStep) return;
+
+    if (initialStep === "bulto" || initialStep === "1") {
+      setStep(1);
+      appliedRef.current = true;
+    }
+  }, [initialStep]);
+
+  useEffect(() => {
+  if (!appliedRef.current) return;
+
+  const stepParam = searchParams.get("step");
+  if (!stepParam) return;
+
+  const params = new URLSearchParams(searchParams.toString());
+  params.delete("step");
+
+  router.replace(`?${params.toString()}`, { scroll: false });
+}, [router, searchParams]);
 
   // ✅ Sync + refresh + go to step 1
   const handleContinuarABulto = () => {

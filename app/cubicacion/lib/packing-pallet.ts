@@ -20,8 +20,22 @@ export type PalletInput = {
   } | null;
 
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
-  objective: "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
 
+  // ✅ Limpio: sin duplicados
+  objective: "OPERATIVO_ESTABLE" | "OPERATIVO_PARAMETRIZABLE";
+
+  // ✅ Feature independiente del objective
+  rotacion2D?: "ON" | "OFF";
+
+  // ✅ Parámetros PRO (solo se usan si objective=OPERATIVO_PARAMETRIZABLE)
+  parametros?: {
+    limiteBultos?: number | null; // (hoy no lo usamos acá: lo resolvés en preview)
+    limiteCapas?: number | null; // 1..N (además de altura/pallet)
+    objetivoOcupacion01?: number | null; // (hoy no lo usamos acá: lo resolvés en preview)
+    apilableOverride?: boolean | null; // false => forzar NO apilable (max 1 capa)
+  } | null;
+
+  // legacy (compat)
   objetivoUnidades?: number; // bultos
   objetivoOcupacion?: number; // 0–1
   modoSimulacion?: boolean;
@@ -33,6 +47,7 @@ export type PalletInput = {
     cantidadBultos: number;
     dimBultoMm: DimMm;
     pesoBultoKg: number;
+    apilable: boolean;
   }>;
 };
 
@@ -81,6 +96,8 @@ export type PalletPlanResult = {
       objetivoOcupacion01?: number | null;
       objetivoUnidades?: number | null;
       modoSimulacion: boolean;
+      rotacion2D: "ON" | "OFF";
+      orientacionElegida?: "NORMAL" | "ROTADA";
     };
   };
 };
@@ -101,14 +118,63 @@ function volumenMm3(d: DimMm) {
   return d.largo * d.ancho * d.alto;
 }
 
-function gridCapacity(
+function sameDimMm(a: DimMm, b: DimMm) {
+  return a.largo === b.largo && a.ancho === b.ancho && a.alto === b.alto;
+}
+
+/**
+ * Devuelve la mejor capacidad de grid (nx*nz) para (largo/ancho) del pallet
+ * con caja (largo/ancho) y, opcionalmente, rotación 2D.
+ * rotated=true => se usa box.ancho como X y box.largo como Z
+ */
+function gridCapacityBest(
   palletBase: { largo: number; ancho: number },
-  box: { largo: number; ancho: number }
+  box: { largo: number; ancho: number },
+  allowRotation: boolean,
 ) {
-  const nx = Math.floor(palletBase.largo / box.largo);
-  const nz = Math.floor(palletBase.ancho / box.ancho);
-  if (nx <= 0 || nz <= 0) return { nx: 0, nz: 0, cap: 0 };
-  return { nx, nz, cap: nx * nz };
+  const normal = {
+    nx: Math.floor(palletBase.largo / box.largo),
+    nz: Math.floor(palletBase.ancho / box.ancho),
+  };
+  const capNormal = normal.nx > 0 && normal.nz > 0 ? normal.nx * normal.nz : 0;
+
+  if (!allowRotation) {
+    return {
+      ...normal,
+      cap: capNormal,
+      rotated: false,
+    };
+  }
+
+  const rotated = {
+    nx: Math.floor(palletBase.largo / box.ancho),
+    nz: Math.floor(palletBase.ancho / box.largo),
+  };
+  const capRot = rotated.nx > 0 && rotated.nz > 0 ? rotated.nx * rotated.nz : 0;
+
+  if (capRot > capNormal) {
+    return {
+      ...rotated,
+      cap: capRot,
+      rotated: true,
+    };
+  }
+
+  return {
+    ...normal,
+    cap: capNormal,
+    rotated: false,
+  };
+}
+
+/**
+ * Cálculo PRO del origen para centrar el grid dentro del pallet:
+ * start = -L/2 + (free/2) + (dim/2)
+ */
+function gridStartCentered(palletLen: number, n: number, dim: number) {
+  const used = n * dim;
+  const free = Math.max(0, palletLen - used);
+  return -palletLen / 2 + free / 2 + dim / 2;
 }
 
 /* =========================
@@ -128,7 +194,7 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     palletDimMm.alto,
     input.reglas?.maxAlturaM
       ? mToMm(Number(input.reglas.maxAlturaM))
-      : palletDimMm.alto
+      : palletDimMm.alto,
   );
 
   const permitirMezclaFinal =
@@ -141,6 +207,44 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
 
   const modoSimulacion = Boolean(input.modoSimulacion);
 
+  // ✅ Rotación 2D independiente
+  const allowRotation2D = (input.rotacion2D ?? "OFF") === "ON";
+
+  // =========================
+  // Límites PRO (capas + apilable)
+  // =========================
+  const limiteCapas =
+    input.parametros?.limiteCapas != null &&
+    Number(input.parametros.limiteCapas) > 0
+      ? Math.floor(Number(input.parametros.limiteCapas))
+      : null;
+
+  const apilableOverride =
+    typeof input.parametros?.apilableOverride === "boolean"
+      ? input.parametros.apilableOverride
+      : null;
+
+  let maxCapasPermitidas =
+    limiteCapas != null ? limiteCapas : Number.POSITIVE_INFINITY;
+
+  // override explícito del usuario (PRO)
+  if (apilableOverride === false) {
+    maxCapasPermitidas = Math.min(maxCapasPermitidas, 1);
+    warnings.push(
+      "Modo parametrizable: apilable=NO. Se limita a 1 capa por pallet.",
+    );
+  } else if (apilableOverride == null) {
+    // si no hay override, respetamos catálogo: si existe algún NO apilable => 1 capa
+    const hayNoApilable = pendientes.some((p) => p.apilable === false);
+    if (hayNoApilable) {
+      maxCapasPermitidas = Math.min(maxCapasPermitidas, 1);
+      warnings.push("Hay bultos NO apilables: se limita a 1 capa por pallet.");
+    }
+  }
+
+  // =========================
+  // Objetivos legacy (corte)
+  // =========================
   const objetivoUnidades =
     modoSimulacion && input.objetivoUnidades != null
       ? Math.max(0, Math.floor(Number(input.objetivoUnidades)))
@@ -156,6 +260,9 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
       ? objetivoOcupacion * palletDimMm.largo * palletDimMm.ancho * maxAlturaMm
       : null;
 
+  // =========================
+  // Estado
+  // =========================
   let pesoActualKg = Number(input.contenedor.peso_pallet_kg || 0);
   const pesoMaxKg = Number(input.contenedor.peso_max_kg || 0);
 
@@ -168,7 +275,13 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
   const placements: PalletPlacement[] = [];
   const porProducto = new Map<number, { bultos: number; porCapa: number }>();
 
+  let orientacionElegida: "NORMAL" | "ROTADA" | undefined;
+
   while (pendientes.some((p) => p.cantidadBultos > 0)) {
+    // ✅ Límite por capas (PRO / apilable)
+    if (capas >= maxCapasPermitidas) break;
+
+    // ✅ Cortes por objetivos
     if (objetivoUnidades != null && cajasTotales >= objetivoUnidades) break;
     if (volumenObjetivoMm3 != null && volumenColocadoMm3 >= volumenObjetivoMm3)
       break;
@@ -177,12 +290,26 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     if (!base) break;
 
     const altoCapa = base.dimBultoMm.alto;
+
+    // ✅ Si no hay altura disponible, cortamos
     if (alturaUsadaMm + altoCapa > maxAlturaMm) break;
 
-    const capBase = gridCapacity(
+    // ✅ Capacidad de grid + orientación
+    const capBase = gridCapacityBest(
       { largo: palletDimMm.largo, ancho: palletDimMm.ancho },
-      { largo: base.dimBultoMm.largo, ancho: base.dimBultoMm.ancho }
+      { largo: base.dimBultoMm.largo, ancho: base.dimBultoMm.ancho },
+      allowRotation2D,
     );
+
+    orientacionElegida = capBase.rotated ? "ROTADA" : "NORMAL";
+
+    // ✅ Dimensiones del grid (si rotó, se invierte)
+    const dimX = capBase.rotated
+      ? base.dimBultoMm.ancho
+      : base.dimBultoMm.largo;
+    const dimZ = capBase.rotated
+      ? base.dimBultoMm.largo
+      : base.dimBultoMm.ancho;
 
     if (capBase.cap <= 0) {
       base.cantidadBultos = 0;
@@ -192,8 +319,11 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     let cajasEnEstaCapa = 0;
     const yBase = alturaUsadaMm;
 
+    // ✅ inicio centrado (PRO)
+    const startX = gridStartCentered(palletDimMm.largo, capBase.nx, dimX);
+    const startZ = gridStartCentered(palletDimMm.ancho, capBase.nz, dimZ);
+
     for (let slot = 0; slot < capBase.cap; slot++) {
-      // ✅ CORTE ESTRICTO POR OBJETIVO (ANTES DE COLOCAR)
       if (objetivoUnidades != null && cajasTotales >= objetivoUnidades) break;
 
       const volumenRestante =
@@ -203,45 +333,66 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
 
       if (volumenRestante <= 0) break;
 
-      if (pesoMaxKg > 0 && pesoActualKg + base.pesoBultoKg > pesoMaxKg) break;
-
       const nx = capBase.nx;
       const nz = capBase.nz;
+
       const ix = slot % nx;
       const iz = Math.floor(slot / nx);
       if (iz >= nz) break;
 
-      const startX = -palletDimMm.largo / 2 + base.dimBultoMm.largo / 2;
-      const startZ = -palletDimMm.ancho / 2 + base.dimBultoMm.ancho / 2;
+      // ✅ Elegir item:
+      let chosen = base;
+
+      if (permitirMezclaFinal) {
+        const alt = pendientes.find(
+          (p) =>
+            p.cantidadBultos > 0 &&
+            sameDimMm(p.dimBultoMm, base.dimBultoMm) &&
+            (pesoMaxKg <= 0 || pesoActualKg + p.pesoBultoKg <= pesoMaxKg),
+        );
+        if (alt) chosen = alt;
+      }
+
+      // ✅ Peso
+      if (pesoMaxKg > 0 && pesoActualKg + chosen.pesoBultoKg > pesoMaxKg) break;
+
+      // ✅ Dimensión real del placement (si el grid rotó, rotamos la caja visual)
+      const placedDim: DimMm = capBase.rotated
+        ? {
+            largo: chosen.dimBultoMm.ancho,
+            ancho: chosen.dimBultoMm.largo,
+            alto: chosen.dimBultoMm.alto,
+          }
+        : chosen.dimBultoMm;
 
       placements.push({
-        tipoProductoId: base.tipoProductoId,
-        codigo: base.codigo,
-        dimMm: base.dimBultoMm,
+        tipoProductoId: chosen.tipoProductoId,
+        codigo: chosen.codigo,
+        dimMm: placedDim,
         posCentroMm: {
-          x: startX + ix * base.dimBultoMm.largo,
-          y: yBase + base.dimBultoMm.alto / 2,
-          z: startZ + iz * base.dimBultoMm.ancho,
+          x: startX + ix * dimX,
+          y: yBase + placedDim.alto / 2,
+          z: startZ + iz * dimZ,
         },
         capa: capas + 1,
       });
 
-      base.cantidadBultos -= 1;
+      chosen.cantidadBultos -= 1;
       cajasEnEstaCapa += 1;
       cajasTotales += 1;
-      pesoActualKg += base.pesoBultoKg;
-      volumenColocadoMm3 += volumenMm3(base.dimBultoMm);
 
-      // ✅ CORTE ESTRICTO DESPUÉS DE COLOCAR
+      pesoActualKg += chosen.pesoBultoKg;
+      volumenColocadoMm3 += volumenMm3(chosen.dimBultoMm);
+
       if (objetivoUnidades != null && cajasTotales >= objetivoUnidades) break;
 
-      const acc = porProducto.get(base.tipoProductoId) ?? {
+      const acc = porProducto.get(chosen.tipoProductoId) ?? {
         bultos: 0,
         porCapa: 0,
       };
       acc.bultos += 1;
       acc.porCapa = Math.max(acc.porCapa, 1);
-      porProducto.set(base.tipoProductoId, acc);
+      porProducto.set(chosen.tipoProductoId, acc);
     }
 
     if (cajasEnEstaCapa <= 0) break;
@@ -285,7 +436,7 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
       tipoProductoId,
       bultosEnPallet1: v.bultos,
       porCapa: v.porCapa,
-    })
+    }),
   );
 
   return {
@@ -315,6 +466,8 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
         objetivoOcupacion01: objetivoOcupacion,
         objetivoUnidades,
         modoSimulacion,
+        rotacion2D: allowRotation2D ? "ON" : "OFF",
+        orientacionElegida,
       },
     },
   };

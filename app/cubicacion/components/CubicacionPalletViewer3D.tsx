@@ -2,7 +2,7 @@
 
 import { Edges, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 /* =========================
    Types
@@ -32,6 +32,71 @@ interface Props {
 ========================= */
 
 const mmToM = (v: number) => (Number.isFinite(v) ? v / 1000 : 0);
+
+function debugBoundsPallet(args: {
+  placements: Array<{
+    dimMm: { largo: number; ancho: number; alto: number };
+    posCentroMm: { x: number; y: number; z: number };
+  }>;
+  palletDimMm: { largo: number; ancho: number; alto: number };
+}) {
+  const { placements, palletDimMm } = args;
+
+  if (!placements.length) {
+    console.log("[PALLET_BOUNDS] sin placements");
+    return;
+  }
+
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity;
+  let maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
+
+  for (const p of placements) {
+    const hx = p.dimMm.largo / 2;
+    const hy = p.dimMm.alto / 2;
+    const hz = p.dimMm.ancho / 2;
+
+    minX = Math.min(minX, p.posCentroMm.x - hx);
+    maxX = Math.max(maxX, p.posCentroMm.x + hx);
+
+    minY = Math.min(minY, p.posCentroMm.y - hy);
+    maxY = Math.max(maxY, p.posCentroMm.y + hy);
+
+    minZ = Math.min(minZ, p.posCentroMm.z - hz);
+    maxZ = Math.max(maxZ, p.posCentroMm.z + hz);
+  }
+
+  const expected = {
+    minX: -palletDimMm.largo / 2,
+    maxX: +palletDimMm.largo / 2,
+    minZ: -palletDimMm.ancho / 2,
+    maxZ: +palletDimMm.ancho / 2,
+    // OJO: el motor de pallet usa Y desde 0 (suelo del pallet "lógico")
+    minY: 0,
+    maxY: palletDimMm.alto,
+  };
+
+  console.log("[PALLET_BOUNDS]", {
+    mins: { minX, minY, minZ },
+    maxs: { maxX, maxY, maxZ },
+    expected,
+    palletDimMm,
+    placed: placements.length,
+    deltas: {
+      dxMin: minX - expected.minX,
+      dxMax: maxX - expected.maxX,
+      dzMin: minZ - expected.minZ,
+      dzMax: maxZ - expected.maxZ,
+      dyMin: minY - expected.minY,
+      dyMax: maxY - expected.maxY,
+    },
+  });
+  console.log("[PALLET_SAMPLE_DIM]", placements[0]?.dimMm);
+}
+
 
 /* =========================
    Constantes visuales
@@ -116,6 +181,10 @@ export function CubicacionPalletViewer3D({ palletDimMm, placements }: Props) {
       gridDivisions: Math.min(50, Math.max(10, Math.round(mmToM(baseMm * 2)))),
     };
   }, [palletDimMm, placements]);
+
+  useEffect(() => {
+  debugBoundsPallet({ placements, palletDimMm });
+}, [placements, palletDimMm]);
 
   return (
     <div className="w-full h-105 rounded-md border bg-slate-100">

@@ -43,7 +43,7 @@ export type BultoSimSnapshotItem = {
 };
 
 export type BultoSimSnapshot = {
-  candidateKey: "A" | "B" | "C";
+  candidateKey: "A" | "B" | "C" | "D";
   titulo: string;
   scope: "SKU";
   items: BultoSimSnapshotItem[];

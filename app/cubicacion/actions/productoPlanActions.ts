@@ -25,6 +25,16 @@ export type ProductoPlanUpsertInput = {
   peso_unidad_kg?: number | null;
 };
 
+export type ProductoPlanListItem = {
+  id: number;
+  codigo: string;
+  descripcion: string | null;
+  cantidad_unidades: number;
+  tipo_producto_id: number | null;
+  dim_unidad_mm: any | null;
+  peso_unidad_kg: number | null;
+};
+
 function toPosNumber(v: unknown): number | null {
   const n = typeof v === "string" ? Number(v.replace(",", ".")) : Number(v);
   if (!Number.isFinite(n)) return null;
@@ -52,16 +62,37 @@ function toDimMmFromLooseFields(input: ProductoPlanUpsertInput): DimMm | null {
   return { largo, ancho, alto };
 }
 
-export async function listProductosPlan(simulacionId: number) {
-  return prisma.cubicacionProductoPlan.findMany({
+export async function listProductosPlan(
+  simulacionId: number,
+): Promise<ProductoPlanListItem[]> {
+  const rows = await prisma.cubicacionProductoPlan.findMany({
     where: { simulacion_id: simulacionId },
     orderBy: { id: "asc" },
+    select: {
+      id: true,
+      codigo: true,
+      descripcion: true,
+      cantidad_unidades: true,
+      tipo_producto_id: true,
+      dim_unidad_mm: true,
+      peso_unidad_kg: true,
+    },
   });
+
+  return rows.map((r) => ({
+    id: r.id,
+    codigo: r.codigo,
+    descripcion: r.descripcion ?? null,
+    cantidad_unidades: Number(r.cantidad_unidades ?? 0),
+    tipo_producto_id: r.tipo_producto_id ?? null,
+    dim_unidad_mm: r.dim_unidad_mm ?? null, // Json es serializable
+    peso_unidad_kg: r.peso_unidad_kg == null ? null : Number(r.peso_unidad_kg),
+  }));
 }
 
 export async function upsertProductoPlan(
   simulacionId: number,
-  input: ProductoPlanUpsertInput
+  input: ProductoPlanUpsertInput,
 ) {
   const codigo = (input.codigo ?? "").trim();
   if (!codigo) throw new Error("codigo requerido");

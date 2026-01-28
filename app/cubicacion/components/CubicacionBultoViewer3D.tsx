@@ -96,8 +96,8 @@ export function CubicacionBultoViewer3D({
   const sourceMode: "PLACEMENTS" | "CONTENIDO" | "NONE" = hasPositionsPlacements
     ? "PLACEMENTS"
     : hasPositionsContenido
-    ? "CONTENIDO"
-    : "NONE";
+      ? "CONTENIDO"
+      : "NONE";
 
   const hasPositions = sourceMode !== "NONE";
 
@@ -140,13 +140,13 @@ export function CubicacionBultoViewer3D({
     const ys =
       sourceMode === "PLACEMENTS"
         ? placements
-            .map((p) => p.positionMm?.y)
-            .filter((y): y is number => typeof y === "number")
-            .map((y) => roundKey(y / 1000))
+          .map((p) => p.positionMm?.y)
+          .filter((y): y is number => typeof y === "number")
+          .map((y) => roundKey(y / 1000))
         : contenido
-            .map((c) => c.positionMm?.y)
-            .filter((y): y is number => typeof y === "number")
-            .map((y) => roundKey(y / 1000));
+          .map((c) => c.positionMm?.y)
+          .filter((y): y is number => typeof y === "number")
+          .map((y) => roundKey(y / 1000));
 
     return Array.from(new Set(ys)).sort((a, b) => a - b);
   }, [placements, contenido, hasPositions, sourceMode]);
@@ -260,8 +260,8 @@ export function CubicacionBultoViewer3D({
                 {sourceMode === "PLACEMENTS"
                   ? `placements (${placements.length})`
                   : sourceMode === "CONTENIDO"
-                  ? `contenido (${contenido.length})`
-                  : "sin layout"}
+                    ? `contenido (${contenido.length})`
+                    : "sin layout"}
               </span>
             </div>
           </div>
@@ -387,13 +387,27 @@ export function CubicacionBultoViewer3D({
 
                   if (!dim || !pos) return null;
 
+                  const realM = {
+                    x: dim.largo / 1000,
+                    y: dim.alto / 1000,
+                    z: dim.ancho / 1000,
+                  };
+
                   const sizeM = {
                     x: sizeWithVisualGap(dim.largo),
                     y: sizeWithVisualGap(dim.alto),
                     z: sizeWithVisualGap(dim.ancho),
                   };
 
-                  const yKey = roundKey(pos.y / 1000);
+                  const yFix = (realM.y - sizeM.y) / 2;
+
+                  const posM = {
+                    x: pos.x / 1000,
+                    y: pos.y / 1000 - yFix,
+                    z: pos.z / 1000,
+                  };
+
+                  const yKey = roundKey(posM.y);
                   const focusAlpha =
                     mode === "TECNICO" && capaSeleccionada !== null
                       ? yKey === capaSeleccionada
@@ -406,7 +420,7 @@ export function CubicacionBultoViewer3D({
                       key={`${pid}-${idx}`}
                       renderOrder={2}
                       frustumCulled={false}
-                      position={[pos.x / 1000, pos.y / 1000, pos.z / 1000]}
+                      position={[posM.x, posM.y, posM.z]}
                       castShadow={mode === "OPERATIVO"}
                       receiveShadow={mode === "OPERATIVO"}
                     >
@@ -431,16 +445,32 @@ export function CubicacionBultoViewer3D({
                   const pid = item.productoId;
                   const color = colorForProducto(pid);
 
+                  const realM = {
+                    x: item.dimUnidadMm.largo / 1000,
+                    y: item.dimUnidadMm.alto / 1000,
+                    z: item.dimUnidadMm.ancho / 1000,
+                  };
+
                   const sizeM = {
                     x: sizeWithVisualGap(item.dimUnidadMm.largo),
                     y: sizeWithVisualGap(item.dimUnidadMm.alto),
                     z: sizeWithVisualGap(item.dimUnidadMm.ancho),
                   };
 
+                  const yFix = (realM.y - sizeM.y) / 2;
+
+
                   const reps = Math.max(1, Math.floor(item.unidades ?? 1));
                   const pos = item.positionMm!;
 
-                  const yKey = roundKey(pos.y / 1000);
+                  const posM = {
+                    x: pos.x / 1000,
+                    y: pos.y / 1000 - yFix,
+                    z: pos.z / 1000,
+                  };
+
+
+                  const yKey = roundKey(posM.y);
                   const focusAlpha =
                     mode === "TECNICO" && capaSeleccionada !== null
                       ? yKey === capaSeleccionada
@@ -455,7 +485,7 @@ export function CubicacionBultoViewer3D({
                         key={`${pid}-${idx}-${i}`}
                         renderOrder={2}
                         frustumCulled={false}
-                        position={[pos.x / 1000, pos.y / 1000, pos.z / 1000]}
+                        position={[posM.x, posM.y, posM.z]}
                         castShadow={mode === "OPERATIVO"}
                         receiveShadow={mode === "OPERATIVO"}
                       >

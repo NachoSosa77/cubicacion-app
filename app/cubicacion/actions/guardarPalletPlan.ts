@@ -3,7 +3,7 @@
 import { prisma } from "@/lib/prisma";
 
 type MixPolicy = "NO_MEZCLAR" | "PERMITIR_MEZCLA";
-type Objective = "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
+type Objective = "OPERATIVO_ESTABLE" | "OPERATIVO_PARAMETRIZABLE";
 
 function toNumber(v: unknown, fallback = 0) {
   const n = Number(v);
@@ -62,7 +62,7 @@ export async function guardarPalletPlan(params: {
 
   const palletsNecesarios = requirePositive(
     toNumber(plan.palletsRequeridos, 0),
-    "plan.palletsRequeridos inválido."
+    "plan.palletsRequeridos inválido.",
   );
 
   const ocupacionVolumenPct = toDecimal2Pct(p1.ocupacionVolumenPct);
@@ -73,7 +73,7 @@ export async function guardarPalletPlan(params: {
     0,
     p1?.referencias?.alturaUsadaMm != null
       ? Math.round(toNumber(p1.referencias.alturaUsadaMm, 0))
-      : Math.round(toNumber(p1.alturaTotalM, 0) * 1000)
+      : Math.round(toNumber(p1.alturaTotalM, 0) * 1000),
   );
 
   const permitirMezcla = mixPolicy === "PERMITIR_MEZCLA";

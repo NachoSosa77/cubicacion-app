@@ -6,7 +6,12 @@ import { applyBultoSnapshotToLote } from "../../actions/applyBultoSnapshotToLote
 import { applyBultoSnapshotToSimulacion } from "../../actions/applyBultoSnapshotToSimulacion";
 import { BultoViewerFromSnapshot } from "../../components/BultoViewerFromSnapshot";
 import { previewBultoLayout3D } from "../actions/previewBultoLayout3D";
-import type { BultoLayout3D, BultoSimSnapshot } from "../types/types";
+import type {
+  BultoLayout3D,
+  BultoSimSnapshot,
+  BultoSimSnapshotItem,
+  SourceTag,
+} from "../types/types";
 
 type DimMm = { largo: number; ancho: number; alto: number };
 
@@ -54,7 +59,6 @@ type ClientLote = {
   items: ClientLoteItem[];
 };
 
-type SourceTag = "SNAPSHOT" | "CATALOGO" | "BULTO_EMPRESA" | "FALLBACK";
 
 /* =========================
    Helpers
@@ -218,7 +222,7 @@ export function BultoPanel({
   const [layoutError, setLayoutError] = useState<string | null>(null);
 
   const [draftLayout, setDraftLayout] = useState<BultoLayout3D | null>(null);
-  const [draftKey, setDraftKey] = useState<"A" | "B" | "C" | null>(null);
+  const [draftKey, setDraftKey] = useState<"A" | "B" | "C" | "D" | null>(null);
 
   // override por SKU (Avanzado)
   const [bultoEmpresaIdBySku, setBultoEmpresaIdBySku] = useState<
@@ -249,70 +253,42 @@ export function BultoPanel({
   };
 
   // =========================
-  // Candidate A
+  // Candidate A (estricto catálogo)
   // =========================
 
   const candidateA = useMemo<BultoSimSnapshot>(() => {
     const warnings: string[] = [];
 
     const items = lote.items.map((it) => {
-      const unPorBultoSnapshot =
-        it.unidades_por_bulto != null && Number(it.unidades_por_bulto) > 0
-          ? Number(it.unidades_por_bulto)
-          : null;
-
-      const unPorBultoFallback = safePosInt(
-        it.tipo_producto.unidad_entra_por_bulto,
-        0,
-      );
-      const unPorBulto = unPorBultoSnapshot ?? unPorBultoFallback;
-
+      // 1) unidades planificadas (base)
       const unidadesPlan = safePosInt(it.cantidad_unidades, 0);
 
-      const bultosSnapshot = safePosInt(it.cantidad_bultos, 0);
-      const { bultos: bultosCalc, sobrante } = calcBultos(
+      // 2) REGLA A: capacidad SOLO desde catálogo (restricción)
+      const unPorBulto = safePosInt(it.tipo_producto.unidad_entra_por_bulto, 0);
+      if (unPorBulto <= 0) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: unidad_entra_por_bulto inválido en catálogo.`,
+        );
+      }
+
+      // 3) bultos calculados SOLO con la restricción catálogo
+      const { bultos, sobrante, parcial } = calcBultos(
         unidadesPlan,
         unPorBulto,
       );
-      const bultos = bultosSnapshot > 0 ? bultosSnapshot : bultosCalc;
-
-      // dims de bulto para Candidate A:
-      // - PRODUCTO_ESTANDAR: catálogo (dims estándar)
-      // - EMPRESA_BULTO: bulto empresa del lote (DB)
-      let dim: DimMm | null = null;
-      let sourceDim: SourceTag = "FALLBACK";
-      let bultoEmpresaId: number | undefined = undefined;
-      let bultoEmpresaCodigo: string | undefined = undefined;
-
-      if (lote.tipo_bulto === "PRODUCTO_ESTANDAR") {
-        dim = asDimBultoStd(it);
-        sourceDim = isValidDim(dim) ? "CATALOGO" : "FALLBACK";
-
-        if (!isValidDim(dim)) {
-          warnings.push(`${it.tipo_producto.codigo}: faltan dims estándar.`);
-        }
-      } else {
-        const beId =
-          typeof lote.bulto_empresa_id === "number"
-            ? lote.bulto_empresa_id
-            : null;
-
-        const b = beId != null ? (empresaBultoMap.get(beId) ?? null) : null;
-
-        if (b) {
-          dim = { largo: b.largo_mm, ancho: b.ancho_mm, alto: b.alto_mm };
-          sourceDim = "BULTO_EMPRESA";
-          bultoEmpresaId = b.id;
-          bultoEmpresaCodigo = b.codigo;
-        } else {
-          warnings.push(
-            `${it.tipo_producto.codigo}: lote EMPRESA_BULTO sin bulto_empresa_id válido (no hay dim_bulto_mm).`,
-          );
-        }
+      if (parcial) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
+        );
       }
 
-      const sourceUn: SourceTag =
-        unPorBultoSnapshot != null ? "SNAPSHOT" : "FALLBACK";
+      // 4) REGLA A: dimensiones SOLO desde catálogo
+      const dim: DimMm | null = asDimBultoStd(it); // usa largo/ancho/alto_por_bulto
+      if (!isValidDim(dim)) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: faltan dims estándar (largo/ancho/alto_por_bulto).`,
+        );
+      }
 
       return {
         tipo_producto_id: it.tipo_producto_id,
@@ -323,10 +299,8 @@ export function BultoPanel({
         sobrante_unidades: sobrante,
         dim_bulto_mm: dim,
         audit: {
-          sourceUnPorBulto: sourceUn,
-          sourceDims: sourceDim,
-          bultoEmpresaId,
-          bultoEmpresaCodigo,
+          sourceUnPorBulto: "CATALOGO" as const,
+          sourceDims: "CATALOGO" as const,
         },
       };
     });
@@ -335,27 +309,27 @@ export function BultoPanel({
       safePosInt(lote.unidades_totales, 0) ||
       items.reduce((a, x) => a + x.unidades_planificadas, 0);
 
-    const bultos =
+    const bultosTot =
       safePosInt(lote.bultos_totales, 0) ||
       items.reduce((a, x) => a + x.cantidad_bultos, 0);
 
     const bultosParciales = items.reduce(
       (a, x) => a + (isParcialRow(x) ? 1 : 0),
-      0
+      0,
     );
 
     return {
       candidateKey: "A",
-      titulo: "A - Plan vigente (catálogo / guardado)",
+      titulo: "A - Plan básico (restricciones del producto)",
       scope: "SKU",
       items,
       warnings,
-      totales: { unidades, bultos, bultosParciales },
+      totales: { unidades, bultos: bultosTot, bultosParciales },
     };
-  }, [lote, empresaBultoMap]);
+  }, [lote.items, lote.unidades_totales, lote.bultos_totales]);
 
   // =========================
-  // Candidate B (catálogo)
+  // Candidate B (bulto empresa)
   // =========================
 
   const candidateB = useMemo<BultoSimSnapshot>(() => {
@@ -363,26 +337,67 @@ export function BultoPanel({
 
     const items = lote.items.map((it) => {
       const unidadesPlan = safePosInt(it.cantidad_unidades, 0);
-      const unPorBulto = safePosInt(it.tipo_producto.unidad_entra_por_bulto, 0);
+
+      // 1) bulto empresa (global o por SKU)
+      const b = pickBultoEmpresaForSku(it.tipo_producto_id);
+      const dimBulto: DimMm | null = b
+        ? { largo: b.largo_mm, ancho: b.ancho_mm, alto: b.alto_mm }
+        : null;
+
+      // 2) dim unidad (debe existir para recalcular)
+      const dimUnidad = tryDimUnidad(it);
+
+      let unPorBulto = 0;
+      let sourceUn: SourceTag = "FALLBACK";
+      let sourceDim: SourceTag = "FALLBACK";
+
+      if (!isValidDim(dimBulto)) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: en B debés seleccionar un bulto empresa válido (global o por SKU).`,
+        );
+      } else {
+        sourceDim = "BULTO_EMPRESA";
+
+        if (!isValidDim(dimUnidad)) {
+          warnings.push(
+            `${it.tipo_producto.codigo}: falta dim_unidad_mm; no se puede recalcular por bulto empresa.`,
+          );
+        } else {
+          const espesor = b?.espesor_pared_mm ?? 0;
+
+          const grid = calcUnidadesPorBultoGrid({
+            dimBulto: dimBulto!,
+            dimUnidad: dimUnidad!,
+            espesorParedMm: espesor,
+          });
+
+          if (grid <= 0) {
+            warnings.push(
+              `${it.tipo_producto.codigo}: no entra por grilla con el bulto empresa seleccionado.`,
+            );
+          } else {
+            unPorBulto = grid; // <- SIN tope por catálogo
+            sourceUn = "BULTO_EMPRESA";
+          }
+        }
+      }
 
       const { bultos, sobrante, parcial } = calcBultos(
         unidadesPlan,
         unPorBulto,
       );
-      const dim = asDimBultoStd(it);
 
-      if (unPorBulto <= 0)
+      // warnings adicionales coherentes
+      if (unPorBulto <= 0) {
         warnings.push(
-          `${it.tipo_producto.codigo}: un/bulto inválido catálogo.`,
+          `${it.tipo_producto.codigo}: un/bulto inválido en B (revisar bulto empresa o dim_unidad_mm).`,
         );
-      if (!isValidDim(dim))
-        warnings.push(`${it.tipo_producto.codigo}: faltan dims estándar.`);
-      if (parcial)
+      }
+      if (parcial) {
         warnings.push(
           `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
         );
-
-      const TAG_CATALOGO: SourceTag = "CATALOGO";
+      }
 
       return {
         tipo_producto_id: it.tipo_producto_id,
@@ -391,14 +406,19 @@ export function BultoPanel({
         unidades_por_bulto: unPorBulto,
         cantidad_bultos: bultos,
         sobrante_unidades: sobrante,
-        dim_bulto_mm: dim,
-        audit: { sourceUnPorBulto: TAG_CATALOGO, sourceDims: TAG_CATALOGO },
+        dim_bulto_mm: dimBulto,
+        audit: {
+          sourceUnPorBulto: sourceUn,
+          sourceDims: sourceDim,
+          bultoEmpresaId: b?.id,
+          bultoEmpresaCodigo: b?.codigo,
+        },
       };
     });
 
     return {
       candidateKey: "B",
-      titulo: "B · Recalcular con catálogo",
+      titulo: "B · Recalcular con bultos de empresa",
       scope: "SKU",
       items,
       warnings,
@@ -406,20 +426,21 @@ export function BultoPanel({
         unidades: items.reduce((a, x) => a + x.unidades_planificadas, 0),
         bultos: items.reduce((a, x) => a + x.cantidad_bultos, 0),
         bultosParciales: items.reduce(
-          (a, x) =>
-            a +
-            (x.unidades_por_bulto > 0 &&
-              x.unidades_planificadas % x.unidades_por_bulto !== 0
-              ? 1
-              : 0),
+          (a, x) => a + (isParcialRow(x) ? 1 : 0),
           0,
         ),
       },
     };
-  }, [lote.items]);
+  }, [
+    lote.items,
+    pickBultoEmpresaForSku,
+    bultoEmpresaIdGlobal,
+    bultoEmpresaIdBySku,
+    empresaBultos,
+  ]);
 
   // =========================
-  // Candidate C (operativo pro)
+  // Candidate C (catálogo + unidades editables)
   // =========================
 
   const candidateC = useMemo<BultoSimSnapshot>(() => {
@@ -434,71 +455,37 @@ export function BultoPanel({
         safePosInt(it.cantidad_unidades, 0),
       );
 
-      let dimBulto: DimMm | null = null;
-      let sourceDim: SourceTag = "FALLBACK";
-      let bultoEmpresaId: number | undefined = undefined;
-      let bultoEmpresaCodigo: string | undefined = undefined;
-      let espesorParedMm = 0;
-
-      const b =
-        empresaBultos.length > 0
-          ? pickBultoEmpresaForSku(it.tipo_producto_id)
-          : null;
-
-      if (b) {
-        dimBulto = { largo: b.largo_mm, ancho: b.ancho_mm, alto: b.alto_mm };
-        sourceDim = "BULTO_EMPRESA";
-        bultoEmpresaId = b.id;
-        bultoEmpresaCodigo = b.codigo;
-        espesorParedMm = b.espesor_pared_mm ?? 0;
-      } else if (lote.tipo_bulto === "PRODUCTO_ESTANDAR") {
-        dimBulto = asDimBultoStd(it);
-        sourceDim = isValidDim(dimBulto) ? "CATALOGO" : "FALLBACK";
-      } else {
-        dimBulto = null;
-        sourceDim = "FALLBACK";
-      }
-
-      const dimUnidad = tryDimUnidad(it);
-
-      let unPorBulto = 0;
-      let sourceUn: SourceTag = "FALLBACK";
-
-      if (isValidDim(dimBulto) && isValidDim(dimUnidad)) {
-        unPorBulto = calcUnidadesPorBultoGrid({
-          dimBulto: dimBulto!,
-          dimUnidad: dimUnidad!,
-          espesorParedMm,
-        });
-
-        if (unPorBulto > 0) {
-          sourceUn =
-            sourceDim === "BULTO_EMPRESA" ? "BULTO_EMPRESA" : "CATALOGO";
-        }
-      }
-
-      if (unPorBulto <= 0) {
-        unPorBulto = safePosInt(it.tipo_producto.unidad_entra_por_bulto, 0);
-        sourceUn = "CATALOGO";
+      // 1) Bulto SIEMPRE catálogo (producto)
+      const dimBulto = asDimBultoStd(it);
+      if (!isValidDim(dimBulto)) {
         warnings.push(
-          `${it.tipo_producto.codigo}: sin dim_unidad_mm o no entra por grilla; usando catálogo (unidad_entra_por_bulto).`,
+          `${it.tipo_producto.codigo}: faltan dims catálogo (largo/ancho/alto_por_bulto).`,
         );
       }
 
+      // 2) Capacidad SIEMPRE restricción del producto
+      const unPorBulto = safePosInt(it.tipo_producto.unidad_entra_por_bulto, 0);
+      if (unPorBulto <= 0) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: unidad_entra_por_bulto inválido en catálogo.`,
+        );
+      }
+
+      // 3) Recalcular bultos según nuevas unidades
       const { bultos, sobrante, parcial } = calcBultos(
         unidadesPlan,
         unPorBulto,
       );
-
-      if (!isValidDim(dimBulto))
-        warnings.push(
-          `${it.tipo_producto.codigo}: faltan dimensiones de bulto para simular.`,
-        );
-
-      if (parcial)
+      if (parcial) {
         warnings.push(
           `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
         );
+      }
+
+      const audit: BultoSimSnapshotItem["audit"] = {
+        sourceUnPorBulto: "CATALOGO",
+        sourceDims: "CATALOGO",
+      };
 
       return {
         tipo_producto_id: it.tipo_producto_id,
@@ -508,23 +495,18 @@ export function BultoPanel({
         cantidad_bultos: bultos,
         sobrante_unidades: sobrante,
         dim_bulto_mm: dimBulto,
-        audit: {
-          sourceUnPorBulto: sourceUn,
-          sourceDims: sourceDim,
-          bultoEmpresaId,
-          bultoEmpresaCodigo,
-        },
+        audit,
       };
     });
 
     const bultosParciales = items.reduce(
       (a, x) => a + (isParcialRow(x) ? 1 : 0),
-      0
+      0,
     );
 
     return {
       candidateKey: "C",
-      titulo: "C · Cálculo operativo editable",
+      titulo: "C · Catálogo + unidades editables",
       scope: "SKU",
       items,
       warnings,
@@ -534,20 +516,129 @@ export function BultoPanel({
         bultosParciales,
       },
     };
-  }, [
-    lote.items,
-    lote.tipo_bulto,
-    planUnitsBySku,
-    bultoEmpresaIdGlobal,
-    bultoEmpresaIdBySku,
-    empresaBultos,
-    empresaBultoMap,
-  ]);
+  }, [lote.items, planUnitsBySku]);
 
-  const [selected, setSelected] = useState<"A" | "B" | "C">("A");
+  // =========================
+  // Candidate D (bulto empresa + unidades editables, MAXIMIZAR capacidad geométrica)
+  // =========================
+
+  const candidateD = useMemo<BultoSimSnapshot>(() => {
+    const warnings: string[] = [];
+
+    const items = lote.items.map((it) => {
+      const planStr =
+        planUnitsBySku[it.tipo_producto_id] ?? String(it.cantidad_unidades);
+
+      const unidadesPlan = safePosInt(
+        planStr,
+        safePosInt(it.cantidad_unidades, 0),
+      );
+
+      // 1) bulto empresa seleccionado
+      const b = pickBultoEmpresaForSku(it.tipo_producto_id);
+      const dimBulto: DimMm | null = b
+        ? { largo: b.largo_mm, ancho: b.ancho_mm, alto: b.alto_mm }
+        : null;
+
+      const espesorParedMm = b?.espesor_pared_mm ?? 0;
+
+      if (!isValidDim(dimBulto)) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: en D debés seleccionar un bulto empresa válido (global o por SKU).`,
+        );
+      }
+
+      // 2) dim unidad obligatoria para maximizar
+      const dimUnidad = tryDimUnidad(it);
+      if (!isValidDim(dimUnidad)) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: falta dim_unidad_mm; no se puede maximizar ocupación.`,
+        );
+      }
+
+      // 3) capacidad geométrica (grilla)
+      let unPorBulto = 0;
+
+      if (isValidDim(dimBulto) && isValidDim(dimUnidad)) {
+        unPorBulto = calcUnidadesPorBultoGrid({
+          dimBulto: dimBulto!,
+          dimUnidad: dimUnidad!,
+          espesorParedMm,
+        });
+
+        if (unPorBulto <= 0) {
+          warnings.push(
+            `${it.tipo_producto.codigo}: la unidad no entra por grilla con el bulto empresa seleccionado.`,
+          );
+        }
+      }
+
+      // 4) bultos según capacidad máxima
+      const { bultos, sobrante, parcial } = calcBultos(
+        unidadesPlan,
+        unPorBulto,
+      );
+
+      if (unPorBulto <= 0) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: un/bulto inválido en D (revisar bulto empresa o dim_unidad_mm).`,
+        );
+      }
+
+      if (parcial) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
+        );
+      }
+
+      const audit: BultoSimSnapshotItem["audit"] = {
+        sourceUnPorBulto: unPorBulto > 0 ? "BULTO_EMPRESA" : "FALLBACK",
+        sourceDims: isValidDim(dimBulto) ? "BULTO_EMPRESA" : "FALLBACK",
+        bultoEmpresaId: b?.id,
+        bultoEmpresaCodigo: b?.codigo,
+      };
+
+      return {
+        tipo_producto_id: it.tipo_producto_id,
+        codigo: it.tipo_producto.codigo,
+        unidades_planificadas: unidadesPlan,
+        unidades_por_bulto: unPorBulto,
+        cantidad_bultos: bultos,
+        sobrante_unidades: sobrante,
+        dim_bulto_mm: dimBulto,
+        audit,
+      };
+    });
+
+    const bultosParciales = items.reduce(
+      (a, x) => a + (isParcialRow(x) ? 1 : 0),
+      0,
+    );
+
+    return {
+      candidateKey: "D",
+      titulo: "D · Maximizar ocupación (bulto empresa + unidades)",
+      scope: "SKU",
+      items,
+      warnings,
+      totales: {
+        unidades: items.reduce((a, x) => a + x.unidades_planificadas, 0),
+        bultos: items.reduce((a, x) => a + x.cantidad_bultos, 0),
+        bultosParciales,
+      },
+    };
+  }, [lote.items, planUnitsBySku, pickBultoEmpresaForSku]);
+
+  const [selected, setSelected] = useState<"A" | "B" | "C" | "D">("A");
 
   const active =
-    selected === "A" ? candidateA : selected === "B" ? candidateB : candidateC;
+    selected === "A"
+      ? candidateA
+      : selected === "B"
+        ? candidateB
+        : selected === "C"
+          ? candidateC
+          : candidateD;
 
   const setPlanForSku = (tipoProductoId: number, v: string) => {
     setPlanUnitsBySku((prev) => ({ ...prev, [tipoProductoId]: v }));
@@ -576,6 +667,39 @@ export function BultoPanel({
         : null;
 
   const canPublishToLote = effectiveLoteId != null;
+
+  const guardarYContinuar = async () => {
+    if (!draftLayout) return;
+
+    setApplyError(null);
+    setApplyLoading(true);
+
+    try {
+      const snapToApply = { ...active, layout3d: draftLayout };
+
+      // 1) siempre: simulación
+      await applyBultoSnapshotToSimulacion({
+        simulacionId,
+        snap: snapToApply,
+      });
+
+      // 2) si hay lote asociado: publicar también al lote
+      if (effectiveLoteId != null) {
+        await applyBultoSnapshotToLote({
+          loteId: effectiveLoteId,
+          snap: snapToApply,
+        });
+      }
+
+      setAppliedSnap(snapToApply);
+      onApply(snapToApply);
+    } catch (e: any) {
+      console.error(e);
+      setApplyError(e?.message ?? "No se pudo guardar el bulto.");
+    } finally {
+      setApplyLoading(false);
+    }
+  };
 
   // =========================
   // Visor 3D
@@ -635,9 +759,9 @@ export function BultoPanel({
     clearLayouts();
   }, [bultoEmpresaIdGlobal, bultoEmpresaIdBySku]);
 
-  // 3) Si edito demanda en C, invalido layout
+  // 3) Si edito demanda en C o D, invalido layout
   useEffect(() => {
-    if (selected !== "C") return;
+    if (selected !== "C" && selected !== "D") return;
     clearLayouts();
   }, [selected, planUnitsBySku]);
 
@@ -664,14 +788,9 @@ export function BultoPanel({
           <div>
             <h2 className="text-base font-semibold text-slate-900">1) Bulto</h2>
           </div>
-          <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-700 border">
-            V2
-          </span>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {pill(`Tipo bulto: ${lote.tipo_bulto}`)}
-          {pill(`Lote: ${lote.descripcion ?? "—"}`)}
           {pill(`Tipo de productos: ${lote.items.length}`)}
         </div>
 
@@ -682,9 +801,15 @@ export function BultoPanel({
           </label>
 
           <div className="grid gap-2">
-            {(["A", "B", "C"] as const).map((k) => {
+            {(["A", "B", "C", "D"] as const).map((k) => {
               const snap =
-                k === "A" ? candidateA : k === "B" ? candidateB : candidateC;
+                k === "A"
+                  ? candidateA
+                  : k === "B"
+                    ? candidateB
+                    : k === "C"
+                      ? candidateC
+                      : candidateD;
               const isActive = selected === k;
 
               return (
@@ -694,9 +819,10 @@ export function BultoPanel({
                   onClick={() => setSelected(k)}
                   className={[
                     "w-full text-left rounded-lg border p-3 transition",
+                    "cursor-pointer",
                     isActive
                       ? "border-indigo-300 bg-indigo-50"
-                      : "border-slate-200 bg-white hover:bg-slate-50",
+                      : "border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300",
                   ].join(" ")}
                 >
                   <div className="flex items-start justify-between gap-2">
@@ -715,17 +841,6 @@ export function BultoPanel({
                         ) : null}
                       </p>
                     </div>
-
-                    <span
-                      className={[
-                        "text-[11px] px-2 py-0.5 rounded-full border",
-                        isActive
-                          ? "bg-white border-indigo-200 text-indigo-700"
-                          : "bg-white border-slate-200 text-slate-700",
-                      ].join(" ")}
-                    >
-                      {isActive ? "Seleccionado" : "Elegir"}
-                    </span>
                   </div>
                 </button>
               );
@@ -733,86 +848,70 @@ export function BultoPanel({
           </div>
         </div>
 
-        {/* Config operativa C */}
-        {selected === "C" && (
+        {(selected === "B" || selected === "C" || selected === "D") && (
           <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
-            <p className="text-xs font-medium text-slate-700">Operativo (C)</p>
+            <p className="text-xs font-medium text-slate-700">
+              {selected === "B"
+                ? "Operativo (B)"
+                : selected === "C"
+                  ? "Operativo (C)"
+                  : "Operativo (D)"}
+            </p>
 
-            {empresaBultos.length > 0 && (
-              <div className="rounded-md border bg-white p-3 space-y-2">
+            {/* selector bulto empresa: B y D */}
+            {(selected === "B" || selected === "D") &&
+              empresaBultos.length > 0 && (
+                <div className="rounded-md border bg-white p-3 space-y-2">
+                  <p className="text-xs font-medium text-slate-700">
+                    Bultos empresa
+                  </p>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-600">
+                      Bulto global
+                    </label>
+                    <select
+                      className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                      value={bultoEmpresaIdGlobal}
+                      onChange={(e) =>
+                        setBultoEmpresaIdGlobal(
+                          e.target.value === "" ? "" : Number(e.target.value),
+                        )
+                      }
+                    >
+                      <option value="">(sin seleccionar)</option>
+                      {empresaBultos.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.codigo} — {b.largo_mm}×{b.ancho_mm}×{b.alto_mm} mm
+                          {b.es_preferido ? " (preferido)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+            {/* demanda editable: C y D */}
+            {(selected === "C" || selected === "D") && (
+              <div className="rounded-md border bg-white p-3">
                 <p className="text-xs font-medium text-slate-700">
-                  Bulto empresa (simulación) — define dimensiones del bulto
+                  Demanda por SKU (editable)
                 </p>
 
-                <div className="space-y-1">
-                  <label className="text-[11px] text-slate-600">
-                    Bulto global
-                  </label>
-                  <select
-                    className="w-full border rounded-md px-3 py-2 text-sm bg-white"
-                    value={bultoEmpresaIdGlobal}
-                    onChange={(e) =>
-                      setBultoEmpresaIdGlobal(
-                        e.target.value === "" ? "" : Number(e.target.value),
-                      )
-                    }
-                  >
-                    <option value="">(sin seleccionar)</option>
-                    {empresaBultos.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.codigo} — {b.largo_mm}×{b.ancho_mm}×{b.alto_mm} mm
-                        {b.es_preferido ? " (preferido)" : ""}
-                      </option>
-                    ))}
-                  </select>
+                <div className="mt-3 max-h-72 overflow-auto rounded-md border">
+                  <ul className="divide-y text-xs">
+                    {lote.items.map((it) => {
+                      const id = it.tipo_producto_id;
+                      return (
+                        <li key={id} className="p-3 space-y-2">
+                          <div className="min-w-0">
+                            <p className="font-semibold text-slate-900">
+                              {it.tipo_producto.codigo}
+                            </p>
+                            <p className="text-slate-600">
+                              {it.tipo_producto.descripcion}
+                            </p>
+                          </div>
 
-                  <p className="text-[11px] text-slate-500">
-                    En C, si elegís un bulto empresa (global o por SKU), se usan
-                    sus dims aunque el lote sea PRODUCTO_ESTANDAR. El un/bulto
-                    se deriva con dim_unidad_mm si existe; si falta, cae a
-                    catálogo.
-                  </p>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowAdvanced((v) => !v)}
-                    className="mt-2 inline-flex w-full justify-center px-3 py-2 rounded-md border bg-white text-slate-900 hover:bg-slate-50 text-sm"
-                  >
-                    {showAdvanced ? "Ocultar avanzado" : "Avanzado"}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="rounded-md border bg-white p-3">
-              <p className="text-xs font-medium text-slate-700">
-                Demanda por SKU (editable)
-              </p>
-              <p className="mt-1 text-[11px] text-slate-500">
-                Esto no toca la base. Sirve para simular escenarios de pedido.
-              </p>
-
-              <div className="mt-3 max-h-72 overflow-auto rounded-md border">
-                <ul className="divide-y text-xs">
-                  {lote.items.map((it) => {
-                    const id = it.tipo_producto_id;
-                    const chosenBulto =
-                      empresaBultos.length > 0
-                        ? pickBultoEmpresaForSku(id)
-                        : null;
-
-                    return (
-                      <li key={id} className="p-3 space-y-2">
-                        <div className="min-w-0">
-                          <p className="font-semibold text-slate-900">
-                            {it.tipo_producto.codigo}
-                          </p>
-                          <p className="text-slate-600">
-                            {it.tipo_producto.descripcion}
-                          </p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
                           <div className="space-y-1">
                             <label className="text-[11px] text-slate-600">
                               Unidades planificadas
@@ -828,64 +927,16 @@ export function BultoPanel({
                             />
                           </div>
 
-                          {showAdvanced && empresaBultos.length > 0 ? (
-                            <div className="space-y-1">
-                              <label className="text-[11px] text-slate-600">
-                                Bulto empresa (SKU)
-                              </label>
-                              <select
-                                className="w-full border rounded-md px-2 py-2 text-sm bg-white"
-                                value={bultoEmpresaIdBySku[id] ?? ""}
-                                onChange={(e) =>
-                                  setSkuBultoEmpresa(id, e.target.value)
-                                }
-                              >
-                                <option value="">(usar global)</option>
-                                {empresaBultos.map((b) => (
-                                  <option key={b.id} value={b.id}>
-                                    {b.codigo} — {b.largo_mm}×{b.ancho_mm}×
-                                    {b.alto_mm} mm
-                                  </option>
-                                ))}
-                              </select>
-                              {chosenBulto ? (
-                                <p className="text-[11px] text-slate-500">
-                                  Activo: {chosenBulto.codigo}
-                                </p>
-                              ) : null}
-                            </div>
-                          ) : (
-                            <div className="space-y-1">
-                              <label className="text-[11px] text-slate-600">
-                                Bulto (SKU)
-                              </label>
-                              <div className="w-full border rounded-md px-2 py-2 text-sm bg-slate-50 text-slate-500">
-                                {empresaBultos.length > 0
-                                  ? "(usar global)"
-                                  : "—"}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        <p className="text-[11px] text-slate-500">
-                          Unidad (dim_unidad_mm): {fmtDim(tryDimUnidad(it))} ·
-                          Bulto:{" "}
-                          {chosenBulto
-                            ? `${chosenBulto.largo_mm}×${chosenBulto.ancho_mm}×${chosenBulto.alto_mm} mm`
-                            : fmtDim(asDimBultoStd(it))}
-                        </p>
-                      </li>
-                    );
-                  })}
-                </ul>
+                          <p className="text-[11px] text-slate-500">
+                            Unidad (dim_unidad_mm): {fmtDim(tryDimUnidad(it))}
+                          </p>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               </div>
-            </div>
-
-            <p className="text-[11px] text-slate-500">
-              En C, el usuario decide la demanda; el sistema deriva un/bulto en
-              función del bulto elegido (si hay) y los datos de unidad.
-            </p>
+            )}
           </div>
         )}
       </div>
@@ -989,10 +1040,14 @@ export function BultoPanel({
                   try {
                     const res = await previewBultoLayout3D({
                       loteId: effectiveLoteId ?? undefined,
-                      simulacionId: typeof simulacionId === "number" ? simulacionId : undefined,
+                      simulacionId:
+                        typeof simulacionId === "number"
+                          ? simulacionId
+                          : undefined,
                       snap: active,
+                      bultoOverrideMm:
+                        activeItemForViewer?.dim_bulto_mm ?? null,
                     });
-
 
                     setDraftLayout(res.layout);
                     setDraftKey(selected);
@@ -1017,87 +1072,16 @@ export function BultoPanel({
                 {layoutLoading ? "Generando layout..." : "Ver layout en visor"}
               </button>
 
-              {/* 2) Aplicar (solo simulación) */}
+              {/* 2) Guardar y continuar (simulación + lote si existe) */}
               <button
                 type="button"
                 disabled={!canApply || applyLoading}
-                onClick={async () => {
-                  if (!draftLayout) return;
-
-                  setApplyError(null);
-                  setApplyLoading(true);
-
-                  try {
-                    const snapToApply = { ...active, layout3d: draftLayout };
-
-                    await applyBultoSnapshotToSimulacion({
-                      simulacionId,
-                      snap: snapToApply,
-                    });
-
-                    setAppliedSnap(snapToApply);
-                    onApply(snapToApply);
-                  } catch (e: any) {
-                    console.error(e);
-                    setApplyError(
-                      e?.message ??
-                      "No se pudo aplicar el snapshot en simulación.",
-                    );
-                  } finally {
-                    setApplyLoading(false);
-                  }
-                }}
+                onClick={guardarYContinuar}
                 className="px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {applyLoading ? "Aplicando..." : "Aplicar y continuar"}
+                {applyLoading ? "Guardando..." : "Guardar y continuar"}
               </button>
 
-
-
-              {/* 3) Publicar al lote (simulación + lote) */}
-              {canPublishToLote ? (
-                <button
-                  type="button"
-                  disabled={!canApply || applyLoading}
-                  onClick={async () => {
-                    if (!draftLayout) return;
-
-                    setApplyError(null);
-                    setApplyLoading(true);
-                    console.log("[PUBLICAR] simulacionLoteId =", simulacionLoteId, "lote.id =", lote.id);
-
-                    try {
-                      const snapToApply = { ...active, layout3d: draftLayout };
-
-                      await applyBultoSnapshotToSimulacion({
-                        simulacionId,
-                        snap: snapToApply,
-                      });
-
-                      if (!effectiveLoteId) throw new Error("No hay lote asociado para publicar.");
-
-                      await applyBultoSnapshotToLote({
-                        loteId: effectiveLoteId,
-                        snap: snapToApply,
-                      });
-
-                      setAppliedSnap(snapToApply);
-                      onApply(snapToApply);
-                    } catch (e: any) {
-                      console.error(e);
-                      setApplyError(
-                        e?.message ??
-                        "No se pudo publicar el snapshot al lote.",
-                      );
-                    } finally {
-                      setApplyLoading(false);
-                    }
-                  }}
-                  className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {applyLoading ? "Publicando..." : "Publicar al lote"}
-                </button>
-              ) : null}
             </div>
           </div>
 
@@ -1141,9 +1125,6 @@ export function BultoPanel({
                 <li key={it.tipo_producto_id} className="p-3">
                   <p className="font-semibold text-slate-900">{it.codigo}</p>
 
-
-
-
                   <p className="mt-1 text-slate-700">
                     Unidades planificadas: {it.unidades_planificadas}
                     {isParcialRow(it) ? (
@@ -1156,7 +1137,9 @@ export function BultoPanel({
                   <p className="mt-1 text-slate-700">
                     Bultos: {it.cantidad_bultos}
                   </p>
-                  <p className="mt-1 text-slate-700">Capacidad por bulto:{it.unidades_por_bulto}</p>
+                  <p className="mt-1 text-slate-700">
+                    Capacidad por bulto:{it.unidades_por_bulto}
+                  </p>
                   {/* <p className="mt-1 text-slate-500">
                     Dim bulto: {fmtDim(it.dim_bulto_mm)} ·{" "}
                     <span className="text-[11px]">

@@ -11,13 +11,17 @@ import {
 } from "../../actions/productoPlanActions";
 import { saveCamionPlan } from "../../actions/saveCamionPlan";
 import { searchTipoProducto } from "../../actions/tipoProductoActions";
+import { toPlain } from "../../lib/toPlain";
 
 type PageProps = {
   params: Promise<{ simulacionId: string }>;
+  searchParams?: Promise<{ step?: string }>;
 };
 
-export default async function Page({ params }: PageProps) {
+export default async function Page({ params, searchParams }: PageProps) {
   const { simulacionId } = await params;
+  const sp = searchParams ? await searchParams : {};
+  const initialStep = sp?.step ?? null;
 
   const simId = Number(simulacionId);
   if (!Number.isFinite(simId) || simId <= 0) {
@@ -45,17 +49,62 @@ export default async function Page({ params }: PageProps) {
   const loteId = simulacion.lote_id ? Number(simulacion.lote_id) : null;
 
   const lote = loteId
-    ? await prisma.cubicacionLote.findUnique({
-        where: { id: loteId },
-        include: {
-          bulto_empresa: true,
-          items: {
-            include: { tipo_producto: true },
-            orderBy: { id: "asc" },
+  ? await prisma.cubicacionLote.findUnique({
+      where: { id: loteId },
+      select: {
+        id: true,
+        empresa_id: true,
+        descripcion: true,
+        unidades_totales: true,
+        bultos_totales: true,
+        packing_policy: true,
+        tipo_bulto: true,
+        bulto_empresa_id: true,
+        bulto_layout: true,
+
+        bulto_empresa: {
+          select: {
+            id: true,
+            codigo: true,
+            descripcion: true,
+            largo_mm: true,
+            ancho_mm: true,
+            alto_mm: true,
+            espesor_pared_mm: true,
+            tara_kg: true,
+            max_peso_kg: true,
           },
         },
-      })
-    : null;
+
+        items: {
+          orderBy: { id: "asc" },
+          select: {
+            id: true,
+            tipo_producto_id: true,
+            cantidad_unidades: true,
+            cantidad_bultos: true,
+            unidades_por_bulto: true,
+            volumen_total_m3: true,
+            dim_unidad_mm: true,
+            peso_unidad_kg: true,
+
+            tipo_producto: {
+              select: {
+                id: true,
+                codigo: true,
+                descripcion: true,
+                unidad_entra_por_bulto: true,
+                largo_por_bulto: true,
+                ancho_por_bulto: true,
+                alto_por_bulto: true,
+              },
+            },
+          },
+        },
+      },
+    })
+  : null;
+
 
   // empresaId: preferimos simulación.empresa_id; fallback a lote; fallback 1
   const empresaId =
@@ -118,20 +167,20 @@ export default async function Page({ params }: PageProps) {
   // 4) Pallet summary: por ahora se deriva del lote (si existe)
   const palletPlans = lote
     ? await prisma.cubicacionPalletPlan.findMany({
-        where: { loteId: lote.id }, // AJUSTA si tu modelo usa lote_id
-        select: {
-          id: true,
-          peso_total_kg: true,
-          updatedAt: true, // AJUSTA si es updated_at
-        },
-        orderBy: { updatedAt: "desc" },
-      })
+      where: { loteId: lote.id }, // AJUSTA si tu modelo usa lote_id
+      select: {
+        id: true,
+        peso_total_kg: true,
+        updatedAt: true, // AJUSTA si es updated_at
+      },
+      orderBy: { updatedAt: "desc" },
+    })
     : [];
 
   const palletsGuardados = palletPlans.length;
   const pesoEstimadoKg = palletPlans.reduce(
     (acc, p) => acc + Number(p.peso_total_kg ?? 0),
-    0
+    0,
   );
   const lastUpdatedAt = palletPlans[0]?.updatedAt ?? null;
 
@@ -175,40 +224,40 @@ export default async function Page({ params }: PageProps) {
   }
 
   async function onContinuarABulto() {
-  "use server";
-  await commitProductosYContinuar(simId); // crea/asegura lote + sync items + totales
+    "use server";
+    await commitProductosYContinuar(simId); // crea/asegura lote + sync items + totales
   }
 
   const loteClient = lote
     ? {
-        id: lote.id,
-        descripcion: lote.descripcion ?? null,
-        unidades_totales: lote.unidades_totales ?? 0,
-        bultos_totales: lote.bultos_totales ?? 0,
-        packing_policy: lote.packing_policy,
-        tipo_bulto: lote.tipo_bulto,
-        bulto_empresa_id: lote.bulto_empresa_id ?? null,
-        bulto_layout: lote.bulto_layout ?? null,
-        items: lote.items.map((it) => ({
-          id: it.id,
-          tipo_producto_id: it.tipo_producto_id,
-          cantidad_unidades: it.cantidad_unidades,
-          cantidad_bultos: it.cantidad_bultos,
-          unidades_por_bulto: it.unidades_por_bulto ?? null,
-          volumen_total_m3: it.volumen_total_m3,
-          dim_unidad_mm: it.dim_unidad_mm ?? null,
-          peso_unidad_kg: it.peso_unidad_kg ?? null,
-          tipo_producto: {
-            id: it.tipo_producto.id,
-            codigo: it.tipo_producto.codigo,
-            descripcion: it.tipo_producto.descripcion,
-            unidad_entra_por_bulto: it.tipo_producto.unidad_entra_por_bulto,
-            largo_por_bulto: it.tipo_producto.largo_por_bulto,
-            ancho_por_bulto: it.tipo_producto.ancho_por_bulto,
-            alto_por_bulto: it.tipo_producto.alto_por_bulto,
-          },
-        })),
-      }
+      id: lote.id,
+      descripcion: lote.descripcion ?? null,
+      unidades_totales: lote.unidades_totales ?? 0,
+      bultos_totales: lote.bultos_totales ?? 0,
+      packing_policy: lote.packing_policy,
+      tipo_bulto: lote.tipo_bulto,
+      bulto_empresa_id: lote.bulto_empresa_id ?? null,
+      bulto_layout: lote.bulto_layout ?? null,
+      items: lote.items.map((it) => ({
+        id: it.id,
+        tipo_producto_id: it.tipo_producto_id,
+        cantidad_unidades: it.cantidad_unidades,
+        cantidad_bultos: it.cantidad_bultos,
+        unidades_por_bulto: it.unidades_por_bulto ?? null,
+        volumen_total_m3: it.volumen_total_m3,
+        dim_unidad_mm: it.dim_unidad_mm ?? null,
+        peso_unidad_kg: it.peso_unidad_kg ?? null,
+        tipo_producto: {
+          id: it.tipo_producto.id,
+          codigo: it.tipo_producto.codigo,
+          descripcion: it.tipo_producto.descripcion,
+          unidad_entra_por_bulto: it.tipo_producto.unidad_entra_por_bulto,
+          largo_por_bulto: it.tipo_producto.largo_por_bulto,
+          ancho_por_bulto: it.tipo_producto.ancho_por_bulto,
+          alto_por_bulto: it.tipo_producto.alto_por_bulto,
+        },
+      })),
+    }
     : null;
 
   const contenedoresClient = contenedores.map((c) => ({
@@ -225,22 +274,36 @@ export default async function Page({ params }: PageProps) {
   const productosPlan = await listProductosPlan(simId);
 
   async function onUpsertProductoPlan(input: {
-  codigo: string;
-  cantidad_unidades: number;
-  tipo_producto_id?: number | null;
-  largo_unidad_mm?: unknown;
-  ancho_unidad_mm?: unknown;
-  alto_unidad_mm?: unknown;
-  peso_unidad_kg?: number | null;
-}) {
-  "use server";
-  await upsertProductoPlan(simId, input);
-}
+    codigo: string;
+    cantidad_unidades: number;
+    tipo_producto_id?: number | null;
+    largo_unidad_mm?: unknown;
+    ancho_unidad_mm?: unknown;
+    alto_unidad_mm?: unknown;
+    peso_unidad_kg?: number | null;
+  }) {
+    "use server";
+    await upsertProductoPlan(simId, input);
+  }
 
   async function onSearchTipoProducto(form: { q: string }) {
     "use server";
     return searchTipoProducto(form.q);
   }
+
+  // 7) Aplicar toPlain en la frontera (props a Client)
+  const propsClient = {
+    simulacionId: simId,
+    initialStep,
+    simulacionLoteId: simulacion?.lote_id ? Number(simulacion.lote_id) : null,
+    empresaId,
+    lote: toPlain(loteClient),
+    contenedores: toPlain(contenedoresClient),
+    empresaBultos: toPlain(empresaBultos),
+    transportes: toPlain(transportes),
+    palletSummary: toPlain(palletSummary),
+    productosPlan,
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -251,10 +314,10 @@ export default async function Page({ params }: PageProps) {
               Simulación de cubicación
             </h1>
             <p className="mt-1 text-sm text-slate-600">
-              Simulación #{simId}
-              {lote
-                ? ` · Lote #${lote.id}${lote.descripcion ? ` · ${lote.descripcion}` : ""}`
-                : " · (sin lote)"}{" "}
+              Titulo: {simulacion.titulo}
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              Descripción: {simulacion.descripcion || "—"}
             </p>
           </div>
 
@@ -265,32 +328,14 @@ export default async function Page({ params }: PageProps) {
             <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
               Empresa: {empresaId}{" "}
             </span>
-            {lote ? (
-              <>
-                <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
-                  Tipo bulto: {lote.tipo_bulto}
-                </span>
-                <span className="rounded-full border bg-white px-2 py-1 text-slate-700">
-                  Ítems: {lote.items.length}
-                </span>
-              </>
-            ) : null}
           </div>
         </header>
 
         <main className="rounded-2xl border bg-white p-4 shadow-sm">
           <SimulacionClient
-            simulacionId={simId}
-            simulacionLoteId={simulacion?.lote_id ? Number(simulacion.lote_id) : null}
-            empresaId={empresaId}
-            lote={loteClient as any}
-            contenedores={contenedoresClient as any}
-            empresaBultos={empresaBultos as any}
-            transportes={transportes as any}
-            palletSummary={palletSummary as any}
+            {...propsClient}
             onPreviewCamion={onPreviewCamion}
             onGuardarCamion={onGuardarCamion}
-            productosPlan={productosPlan}
             onUpsertProductoPlan={onUpsertProductoPlan}
             onSearchTipoProducto={onSearchTipoProducto}
             onContinuarABulto={onContinuarABulto}
@@ -299,4 +344,4 @@ export default async function Page({ params }: PageProps) {
       </div>
     </div>
   );
-} 
+}

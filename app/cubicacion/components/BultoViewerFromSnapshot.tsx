@@ -1,32 +1,11 @@
 "use client";
 
 import { useMemo } from "react";
-import { BultoLayout3DPlacement } from "../simulacion/types/types";
+import type { BultoLayout3DPlacement } from "../simulacion/types/types";
 import type { CubicacionBulto3DInput } from "../types/cubicacion-3d";
 import { CubicacionBultoViewer3D } from "./CubicacionBultoViewer3D";
 
 type DimMm = { largo: number; ancho: number; alto: number };
-
-type PlacementMm = {
-  productoId: number;
-  codigo: string;
-  dimUnidadMm: DimMm;
-  posCentroMm: { x: number; y: number; z: number };
-};
-
-function safeInt(v: unknown, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.trunc(n) : fallback;
-}
-
-function tryDimMm(v: any): DimMm | null {
-  if (!v) return null;
-  const largo = safeInt(v.largo ?? v.largo_mm ?? v.l, 0);
-  const ancho = safeInt(v.ancho ?? v.ancho_mm ?? v.a, 0);
-  const alto = safeInt(v.alto ?? v.alto_mm ?? v.h, 0);
-  if (largo > 0 && ancho > 0 && alto > 0) return { largo, ancho, alto };
-  return null;
-}
 
 export function BultoViewerFromSnapshot({
   bultoDimMm,
@@ -41,27 +20,24 @@ export function BultoViewerFromSnapshot({
   productoId: number;
   codigo: string;
   unidades: number;
-placements?: BultoLayout3DPlacement[] | null;}) {
+  placements?: BultoLayout3DPlacement[] | null;
+}) {
   const data = useMemo<CubicacionBulto3DInput>(() => {
-    const base = {
-      bulto: { dimInternaMm: bultoDimMm } as any,
-    };
+    const base = { bulto: { dimInternaMm: bultoDimMm } } as any;
 
-    // Si vienen placements, el viewer ya puede dibujar el layout (hasPositions=true)
-    if (placements && placements.length > 0) {
+    if (placements?.length) {
       return {
         ...base,
-        contenido: placements.map((p, i) => ({
+        contenido: placements.map((p) => ({
           productoId: p.tipo_producto_id,
           codigo: p.codigo,
           unidades: 1,
           dimUnidadMm: p.dim_unidad_mm,
-          positionMm: p.positionMm, // clave: ahora sí hay posiciones
+          positionMm: p.positionMm, // con posiciones => layout real
         })),
       } as any;
     }
 
-    // Fallback: modo snapshot (sin layout)
     return {
       ...base,
       contenido: [
@@ -75,12 +51,8 @@ placements?: BultoLayout3DPlacement[] | null;}) {
     } as any;
   }, [bultoDimMm, unidadDimMm, productoId, codigo, unidades, placements]);
 
-  // Si no hay unidad real, evitamos que se vea una “caja 1×1×1”:
   const hasUnidad =
-    !!unidadDimMm &&
-    unidadDimMm.largo > 0 &&
-    unidadDimMm.ancho > 0 &&
-    unidadDimMm.alto > 0;
+    !!unidadDimMm && unidadDimMm.largo > 0 && unidadDimMm.ancho > 0 && unidadDimMm.alto > 0;
 
   return (
     <div className="space-y-2">

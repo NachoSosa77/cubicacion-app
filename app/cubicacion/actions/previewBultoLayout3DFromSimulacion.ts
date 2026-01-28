@@ -20,7 +20,7 @@ export async function previewBultoLayout3DFromSimulacion(args: {
 
   if (!sim.lote_id) {
     throw new Error(
-      "Esta simulación no tiene lote asociado. Falta implementar preview 3D sin lote (próximo paso)."
+      "Esta simulación no tiene lote asociado. Falta implementar preview 3D sin lote (próximo paso).",
     );
   }
 

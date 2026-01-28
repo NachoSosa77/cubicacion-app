@@ -72,5 +72,5 @@ export async function commitProductosYContinuar(simulacionId: number) {
     return { loteId };
   });
 
-  redirect(`/cubicacion/simulacion/${simulacionId}`);
+  redirect(`/cubicacion/simulacion/${simulacionId}?step=1`);
 }
