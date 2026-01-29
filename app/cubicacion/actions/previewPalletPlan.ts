@@ -489,6 +489,21 @@ export async function previewPalletPlan(params: {
     })),
   );
 
+  const motivoMix = !multiSku
+    ? "SINGLE_SKU"
+    : objective === "OPERATIVO_ESTABLE"
+      ? "OPERATIVO_ESTABLE_FORCE_NO_MEZCLAR"
+      : "RESPETA_INPUT";
+
+  console.log("PREVIEW_PALLET :: MIX", {
+    mixPolicyInput: mixPolicy,
+    mixPolicyEfectiva,
+    multiSku,
+    motivoMix,
+    reglaPermitirMezcla: regla?.permitirMezcla ?? null,
+    maxCodigosPorPallet: (regla as any)?.maxCodigosPorPallet ?? null,
+  });
+
   // 9) Calcular plan
   const plan = calcularPalletPlan({
     contenedor: {

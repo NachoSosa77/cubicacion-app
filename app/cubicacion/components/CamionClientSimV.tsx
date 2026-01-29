@@ -10,6 +10,7 @@ import { CubicacionCamionViewer3D } from "./CubicacionCamionViewer3D";
 type DimMm = { largo: number; ancho: number; alto: number };
 
 type CamionPlacement = {
+  id: string; // ✅ unico para React
   palletPlanId: number;
   dimMm: DimMm;
   posCentroMm: { x: number; y: number; z: number };
@@ -60,6 +61,69 @@ type PalletSummary = {
    UI helpers
 ========================= */
 
+function buildGridPlacements(args: {
+  pallets: number;
+  camionDimMm: DimMm;
+  palletDimMm: DimMm;
+}): CamionPlacement[] {
+  const { pallets, camionDimMm, palletDimMm } = args;
+  if (pallets <= 0) return [];
+
+  // elegir orientación que maximiza por piso
+  const normal = {
+    rot90: false,
+    nx: Math.floor(camionDimMm.largo / palletDimMm.largo),
+    ny: Math.floor(camionDimMm.ancho / palletDimMm.ancho),
+    dx: palletDimMm.largo,
+    dy: palletDimMm.ancho,
+  };
+
+  const rot = {
+    rot90: true,
+    nx: Math.floor(camionDimMm.largo / palletDimMm.ancho),
+    ny: Math.floor(camionDimMm.ancho / palletDimMm.largo),
+    dx: palletDimMm.ancho,
+    dy: palletDimMm.largo,
+  };
+
+  const capNormal = Math.max(0, normal.nx) * Math.max(0, normal.ny);
+  const capRot = Math.max(0, rot.nx) * Math.max(0, rot.ny);
+
+  const best = capRot > capNormal ? rot : normal;
+  const perFloor = Math.max(0, best.nx) * Math.max(0, best.ny);
+  if (perFloor <= 0) return [];
+
+  const floors = Math.max(1, Math.floor(camionDimMm.alto / palletDimMm.alto));
+  const maxTotal = perFloor * floors;
+  const count = Math.min(pallets, maxTotal);
+
+  const placements: CamionPlacement[] = [];
+  let i = 0;
+
+  for (let f = 0; f < floors && i < count; f++) {
+    for (let y = 0; y < best.ny && i < count; y++) {
+      for (let x = 0; x < best.nx && i < count; x++) {
+        const centerX = x * best.dx + best.dx / 2;
+        const centerY = y * best.dy + best.dy / 2;
+        const centerZ = f * palletDimMm.alto + palletDimMm.alto / 2;
+
+        placements.push({
+          id: `sim-${i}`,
+          palletPlanId: 0, // en simulación no importa
+          dimMm: palletDimMm,
+          posCentroMm: { x: centerX, y: centerY, z: centerZ },
+          rot90: best.rot90,
+        });
+
+        i++;
+      }
+    }
+  }
+
+  return placements;
+}
+
+
 const STRATEGY_LABEL: Record<CamionStrategy, string> = {
   ESTABLE: "Operativo / estable",
   OPTIMIZAR: "Optimizar ocupación",
@@ -71,6 +135,34 @@ const STRATEGY_DESC: Record<CamionStrategy, string> = {
   OPTIMIZAR: "Maximiza ocupación del piso. Ideal para reducir viajes.",
   DESCARGA_RAPIDA: "Ordena pensando en descarga. Mejora tiempos en destino.",
 };
+
+function floorDiv(a: number, b: number) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return 0;
+  return Math.floor(a / b);
+}
+
+function calcMaxPalletsPorPiso(camion: DimMm, pallet: DimMm) {
+  // caso normal
+  const nx = floorDiv(camion.largo, pallet.largo);
+  const ny = floorDiv(camion.ancho, pallet.ancho);
+  const normal = nx * ny;
+
+  // caso rotado 90°
+  const nxR = floorDiv(camion.largo, pallet.ancho);
+  const nyR = floorDiv(camion.ancho, pallet.largo);
+  const rot = nxR * nyR;
+
+  if (rot > normal) {
+    return { palletsPorPiso: rot, usarRot90: true, nx: nxR, ny: nyR };
+  }
+  return { palletsPorPiso: normal, usarRot90: false, nx, ny };
+}
+
+function clampInt(v: number, min: number, max: number) {
+  const n = Math.trunc(v);
+  return Math.max(min, Math.min(max, n));
+}
+
 
 function formatDateTime(iso: string | null) {
   if (!iso) return "—";
@@ -153,6 +245,7 @@ export function CamionClientSimV2({
   const [selected, setSelected] = useState<CamionStrategy>("ESTABLE");
   const [error, setError] = useState<string | null>(null);
   const [mensaje, setMensaje] = useState<string | null>(null);
+  const [ocupacionObjetivoPct, setOcupacionObjetivoPct] = useState<number>(100);
 
   const [isPending, startTransition] = useTransition();
   const [isSaving, startSave] = useTransition();
@@ -164,7 +257,144 @@ export function CamionClientSimV2({
 
   const hasPallets = (palletSummary?.palletsGuardados ?? 0) > 0;
 
-  const activePlan = preview?.plans_by_strategy?.[selected] ?? null;
+
+
+
+  const palletSpec = useMemo(() => {
+    // 1) necesito un preview o al menos un plan con placements
+    const anyPlan =
+      preview?.plans_by_strategy?.ESTABLE ??
+      preview?.plans_by_strategy?.OPTIMIZAR ??
+      null;
+
+    const first = anyPlan?.placements?.[0] ?? null;
+    if (!first) return null;
+
+    const dim = first.dimMm;
+    const pesoPorPallet =
+      palletSummary.palletsGuardados > 0
+        ? palletSummary.pesoEstimadoKg / palletSummary.palletsGuardados
+        : null;
+
+    return { dim, pesoPorPallet };
+  }, [preview, palletSummary]);
+
+  const capacidadCamion = useMemo(() => {
+    if (!transporteSel || !palletSpec) return null;
+
+    const camion: DimMm = {
+      largo: Math.round(transporteSel.mt_largo_cub * 1000),
+      ancho: Math.round(transporteSel.mt_ancho_cub * 1000),
+      alto: Math.round(transporteSel.mt_alto_cub * 1000),
+    };
+
+    // altura
+    if (palletSpec.dim.alto > camion.alto) {
+      return {
+        camion,
+        maxPorGeometria: 0,
+        maxPorPeso: 0,
+        max: 0,
+        usarRot90: false,
+        motivo: "El pallet no entra por altura.",
+      };
+    }
+
+    // grilla piso
+    const g = calcMaxPalletsPorPiso(camion, palletSpec.dim);
+    const maxPorGeometria = g.palletsPorPiso;
+
+    // peso
+    const maxPeso = transporteSel.max_peso_kg ?? null;
+    const pesoPorPallet = palletSpec.pesoPorPallet ?? null;
+
+    let maxPorPeso = maxPorGeometria;
+    if (maxPeso != null && pesoPorPallet != null && pesoPorPallet > 0) {
+      maxPorPeso = Math.floor(maxPeso / pesoPorPallet);
+    }
+
+    const max = Math.max(0, Math.min(maxPorGeometria, maxPorPeso));
+
+    return {
+      camion,
+      maxPorGeometria,
+      maxPorPeso,
+      max,
+      usarRot90: g.usarRot90,
+      motivo: null as string | null,
+    };
+  }, [transporteSel, palletSpec]);
+
+  const palletsCapacidadPct = useMemo(() => {
+    if (!capacidadCamion) return 0;
+    const raw = (capacidadCamion.max * ocupacionObjetivoPct) / 100;
+    return clampInt(Math.floor(raw), 0, capacidadCamion.max);
+  }, [capacidadCamion, ocupacionObjetivoPct]);
+
+  const activePlan = useMemo<CamionPlanResult | null>(() => {
+  if (!preview) return null;
+
+  // ESTABLE y DESCARGA_RAPIDA = lo que venga del server
+  if (selected !== "OPTIMIZAR") {
+    return preview.plans_by_strategy[selected] ?? null;
+  }
+
+  // =========================
+  // OPTIMIZAR = simulador por %
+  // =========================
+
+  const base =
+    preview.plans_by_strategy.ESTABLE ??
+    preview.plans_by_strategy.OPTIMIZAR;
+
+  if (!base || !capacidadCamion || !palletSpec?.dim) return base ?? null;
+
+  const camionDimMm = capacidadCamion.camion;
+  const palletDimMm = palletSpec.dim;
+
+  const palletsEnCamion = palletsCapacidadPct;
+
+  const palletsTotales = base.palletsTotales;
+  const camionesRequeridos =
+    palletsEnCamion > 0
+      ? Math.ceil(palletsTotales / palletsEnCamion)
+      : palletsTotales;
+
+  const pesoPorPallet = palletSpec.pesoPorPallet ?? 0;
+  const pesoTotalKg = palletsEnCamion * pesoPorPallet;
+
+  // 👉 generar placements en grilla SOLO para visualizar
+  const placements = buildGridPlacements({
+    pallets: palletsEnCamion,
+    camionDimMm,
+    palletDimMm,
+  });
+
+  return {
+    ...base,
+    palletsEnCamion,
+    camionesRequeridos,
+    pesoTotalKg,
+    camionDimMm,
+    placements,
+    warnings: [
+      ...(base.warnings ?? []),
+      `Simulación por ocupación objetivo: ${ocupacionObjetivoPct}%.`,
+      placements.length < palletsEnCamion
+        ? "Limitado por altura: no entran todas las capas."
+        : "",
+    ].filter(Boolean),
+  };
+}, [
+  preview,
+  selected,
+  capacidadCamion,
+  palletsCapacidadPct,
+  ocupacionObjetivoPct,
+  palletSpec,
+]);
+
+
 
   const handlePreview = () => {
     setError(null);
@@ -344,6 +574,46 @@ export function CamionClientSimV2({
             })}
           </div>
         </div>
+
+        {selected === "OPTIMIZAR" && (
+          <div className="rounded-lg border bg-white p-3 space-y-2">
+            <label className="text-sm font-medium text-slate-700">
+              Ocupación objetivo del camión
+            </label>
+
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={10}
+                max={100}
+                step={5}
+                value={ocupacionObjetivoPct}
+                onChange={(e) => setOcupacionObjetivoPct(Number(e.target.value))}
+                className="w-full"
+              />
+              <span className="text-sm font-semibold w-14 text-right">
+                {ocupacionObjetivoPct}%
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              Simula cuántos pallets iguales al pallet actual entran, respetando medidas/altura/peso.
+            </p>
+
+            {capacidadCamion && (
+              <div className="text-xs text-slate-600 space-y-1">
+                <div>Cap. máx geométrica: <b>{capacidadCamion.maxPorGeometria}</b></div>
+                <div>Cap. máx por peso: <b>{capacidadCamion.maxPorPeso}</b></div>
+                <div>Capacidad máx final: <b>{capacidadCamion.max}</b></div>
+                <div>A {ocupacionObjetivoPct}%: <b>{palletsCapacidadPct}</b> pallets</div>
+                {capacidadCamion.motivo ? (
+                  <div className="text-amber-700">{capacidadCamion.motivo}</div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        )}
+
 
         {/* Guardar */}
         <div className="rounded-lg border bg-white p-3 space-y-2">

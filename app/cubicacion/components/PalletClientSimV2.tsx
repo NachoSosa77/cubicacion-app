@@ -112,13 +112,14 @@ type MixPolicy = "NO_MEZCLAR" | "PERMITIR_MEZCLA";
 type Objective = "OPERATIVO_ESTABLE" | "OPERATIVO_PARAMETRIZABLE";
 type Rotacion2D = "ON" | "OFF";
 
-type PalletParametros = {
-  // ✅ PRO: stress test y override
-  bultosSimulados?: number | null; // objetivo de bultos a intentar colocar (puede ser > lote real)
-  capasMaxOverride?: number | null; // máximo de capas permitido (además de altura/peso)
-  objetivoOcupacion01?: number | null; // 0..1 (opcional)
-  apilableOverride?: boolean | null; // false => NO apilable
-} | null;
+type PalletParametros =
+  | {
+    bultosSimulados?: number | null;
+    capasMaxOverride?: number | null;
+    objetivoOcupacion01?: number | null;
+    apilableOverride?: boolean | null;
+  }
+  | null;
 
 interface Props {
   empresaId: number;
@@ -177,16 +178,26 @@ export function PalletClientSimV2({
   const [objective, setObjective] = useState<Objective>("OPERATIVO_ESTABLE");
   const [rotacion2D, setRotacion2D] = useState<Rotacion2D>("OFF");
 
-  // ✅ PRO (solo si objective=OPERATIVO_PARAMETRIZABLE)
-  const [proBultosSimulados, setProBultosSimulados] = useState<string>(""); // objetivo bultos a intentar
-  const [proCapasMaxOverride, setProCapasMaxOverride] = useState<string>(""); // máximo capas permitido
-  const [proObjetivoOcupacion, setProObjetivoOcupacion] = useState<string>(""); // 0..1
+  const [proBultosSimulados, setProBultosSimulados] = useState<string>("");
+  const [proCapasMaxOverride, setProCapasMaxOverride] = useState<string>("");
+  const [proObjetivoOcupacion, setProObjetivoOcupacion] = useState<string>("");
   const [proApilableOverride, setProApilableOverride] = useState<
     "AUTO" | "NO_APILABLE"
   >("AUTO");
 
   const [result, setResult] = useState<PalletPlanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  type MixCompare = {
+    off: PalletPlanResult; // NO_MEZCLAR
+    on: PalletPlanResult;  // PERMITIR_MEZCLA
+    winner: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
+    score: {
+      off: number;
+      on: number;
+    };
+  };
+
+  const [mixCompare, setMixCompare] = useState<MixCompare | null>(null);
 
   const [isPendingPreview, startPreview] = useTransition();
   const [isPendingSave, startSave] = useTransition();
@@ -197,6 +208,12 @@ export function PalletClientSimV2({
   const forceNoMezclar = useMemo(() => {
     return objective === "OPERATIVO_ESTABLE" && multiSku;
   }, [objective, multiSku]);
+
+
+  const canCompareMix = multiSku && !forceNoMezclar;
+  // multiSku: hay 2+ SKUs
+  // forceNoMezclar: en Operativo estable + multi SKU vos mismo lo bloqueás
+
 
   const mixPolicyEfectiva: MixPolicy = forceNoMezclar ? "NO_MEZCLAR" : mixPolicy;
 
@@ -253,7 +270,10 @@ export function PalletClientSimV2({
           ? Number(it.unidades_por_bulto)
           : null;
 
-      const unPorBultoFallback = safeNumber(it.tipo_producto.unidad_entra_por_bulto, 0);
+      const unPorBultoFallback = safeNumber(
+        it.tipo_producto.unidad_entra_por_bulto,
+        0
+      );
       const unPorBulto = unPorBultoSnapshot ?? unPorBultoFallback;
 
       const bultosSnapshot = safeNumber(it.cantidad_bultos, 0);
@@ -307,6 +327,7 @@ export function PalletClientSimV2({
   const validateForm = () => {
     setError(null);
     setSavedId(null);
+    setMixCompare(null);
 
     if (!tipoContenedorId) {
       setError("Seleccioná un tipo de pallet / contenedor.");
@@ -326,18 +347,19 @@ export function PalletClientSimV2({
       return null;
     }
 
-    // =========================
-    // PRO: parseo parámetros
-    // =========================
     const isPro = objective === "OPERATIVO_PARAMETRIZABLE";
 
     const parsedBultosSimulados =
-      isPro && proBultosSimulados.trim() !== "" && safeNumber(proBultosSimulados, 0) > 0
+      isPro &&
+        proBultosSimulados.trim() !== "" &&
+        safeNumber(proBultosSimulados, 0) > 0
         ? Math.floor(safeNumber(proBultosSimulados, 0))
         : null;
 
     const parsedCapasMaxOverride =
-      isPro && proCapasMaxOverride.trim() !== "" && safeNumber(proCapasMaxOverride, 0) > 0
+      isPro &&
+        proCapasMaxOverride.trim() !== "" &&
+        safeNumber(proCapasMaxOverride, 0) > 0
         ? Math.floor(safeNumber(proCapasMaxOverride, 0))
         : null;
 
@@ -352,7 +374,9 @@ export function PalletClientSimV2({
         parsedObjetivoOcupacion01 < 0 ||
         parsedObjetivoOcupacion01 > 1
       ) {
-        setError("En modo PRO, el objetivo de ocupación debe estar entre 0 y 1 (ej: 0.50).");
+        setError(
+          "En modo PRO, el objetivo de ocupación debe estar entre 0 y 1 (ej: 0.50)."
+        );
         return null;
       }
     }
@@ -360,21 +384,18 @@ export function PalletClientSimV2({
     const apilableOverride: boolean | null =
       isPro && proApilableOverride === "NO_APILABLE" ? false : null;
 
-    // Si forzás NO apilable, 1 capa es la única opción coherente
     const capasMaxOverrideEfectiva =
       apilableOverride === false ? 1 : parsedCapasMaxOverride;
 
-    const parametros: PalletParametros =
-      isPro
-        ? {
-          bultosSimulados: parsedBultosSimulados,
-          capasMaxOverride: capasMaxOverrideEfectiva,
-          objetivoOcupacion01: parsedObjetivoOcupacion01,
-          apilableOverride,
-        }
-        : null;
+    const parametros: PalletParametros = isPro
+      ? {
+        bultosSimulados: parsedBultosSimulados,
+        capasMaxOverride: capasMaxOverrideEfectiva,
+        objetivoOcupacion01: parsedObjetivoOcupacion01,
+        apilableOverride,
+      }
+      : null;
 
-    // En operativo estable: rotación OFF sí o sí
     const rotacion2DEfectiva: Rotacion2D =
       objective === "OPERATIVO_ESTABLE" ? "OFF" : rotacion2D;
 
@@ -447,24 +468,37 @@ export function PalletClientSimV2({
           ...form,
           mixPolicy: "NO_MEZCLAR",
         });
+
         const onRes = await previewPalletPlan({
           ...form,
           mixPolicy: "PERMITIR_MEZCLA",
         });
 
-        const best =
-          (onRes.plan.pallet1.ocupacionLogradaPct ?? 0) >=
-            (offRes.plan.pallet1.ocupacionLogradaPct ?? 0)
-            ? onRes.plan
-            : offRes.plan;
+        const offPlan = offRes.plan;
+        const onPlan = onRes.plan;
 
-        setResult(best);
+        const offScore = safeNumber(offPlan.pallet1.ocupacionLogradaPct, 0);
+        const onScore = safeNumber(onPlan.pallet1.ocupacionLogradaPct, 0);
+
+        const winner: MixCompare["winner"] =
+          onScore >= offScore ? "PERMITIR_MEZCLA" : "NO_MEZCLAR";
+
+        setMixCompare({
+          off: offPlan,
+          on: onPlan,
+          winner,
+          score: { off: offScore, on: onScore },
+        });
+
+        // ✅ comportamiento actual: mostramos el "mejor" en el viewer
+        setResult(winner === "PERMITIR_MEZCLA" ? onPlan : offPlan);
       } catch (e) {
         console.error(e);
         setError("No se pudo comparar mezcla ON vs OFF.");
       }
     });
   };
+
 
   function pill(text: string) {
     return (
@@ -561,7 +595,8 @@ export function PalletClientSimV2({
               desc: "Consistente para operación diaria. Sin parámetros PRO.",
               active: objective === "OPERATIVO_ESTABLE",
               onClick: () => setObjective("OPERATIVO_ESTABLE"),
-              badge: objective === "OPERATIVO_ESTABLE" ? "Seleccionado" : "Elegir",
+              badge:
+                objective === "OPERATIVO_ESTABLE" ? "Seleccionado" : "Elegir",
             })}
 
             {optionCard({
@@ -570,7 +605,9 @@ export function PalletClientSimV2({
               active: objective === "OPERATIVO_PARAMETRIZABLE",
               onClick: () => setObjective("OPERATIVO_PARAMETRIZABLE"),
               badge:
-                objective === "OPERATIVO_PARAMETRIZABLE" ? "Seleccionado" : "Elegir",
+                objective === "OPERATIVO_PARAMETRIZABLE"
+                  ? "Seleccionado"
+                  : "Elegir",
             })}
           </div>
 
@@ -580,7 +617,8 @@ export function PalletClientSimV2({
               <div>
                 <p className="text-sm font-medium text-slate-800">Rotación 2D</p>
                 <p className="text-xs text-slate-500">
-                  Permite rotar base largo/ancho para mejorar la grilla (si ayuda).
+                  Permite rotar base largo/ancho para mejorar la grilla (si
+                  ayuda).
                 </p>
               </div>
 
@@ -603,7 +641,9 @@ export function PalletClientSimV2({
           {/* Panel PRO */}
           {objective === "OPERATIVO_PARAMETRIZABLE" && (
             <div className="rounded-lg border bg-white p-3 space-y-3">
-              <p className="text-sm font-semibold text-slate-800">Parámetros PRO</p>
+              <p className="text-sm font-semibold text-slate-800">
+                Parámetros PRO
+              </p>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
@@ -614,11 +654,15 @@ export function PalletClientSimV2({
                     value={proBultosSimulados}
                     onChange={(e) => setProBultosSimulados(e.target.value)}
                     inputMode="numeric"
-                    placeholder={`Ej: ${Math.max(1, safeNumber(lote.bultos_totales, 0) * 2)}`}
+                    placeholder={`Ej: ${Math.max(
+                      1,
+                      safeNumber(lote.bultos_totales, 0) * 2
+                    )}`}
                     className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                   />
                   <p className="text-[11px] text-slate-500">
-                    Stress test: el motor intenta colocar hasta esa cantidad (puede ser mayor que el lote real).
+                    Stress test: el motor intenta colocar hasta esa cantidad
+                    (puede ser mayor que el lote real).
                   </p>
                 </div>
 
@@ -634,7 +678,8 @@ export function PalletClientSimV2({
                     className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                   />
                   <p className="text-[11px] text-slate-500">
-                    Tope de capas permitido. Igual se respetan altura útil y peso máximo.
+                    Tope de capas permitido. Igual se respetan altura útil y
+                    peso máximo.
                   </p>
                 </div>
 
@@ -660,11 +705,15 @@ export function PalletClientSimV2({
                   </label>
                   <select
                     value={proApilableOverride}
-                    onChange={(e) => setProApilableOverride(e.target.value as any)}
+                    onChange={(e) =>
+                      setProApilableOverride(e.target.value as any)
+                    }
                     className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                   >
                     <option value="AUTO">Auto (según catálogo)</option>
-                    <option value="NO_APILABLE">Forzar NO apilable (1 capa)</option>
+                    <option value="NO_APILABLE">
+                      Forzar NO apilable (1 capa)
+                    </option>
                   </select>
                   <p className="text-[11px] text-slate-500">
                     Si forzás NO apilable, el motor limita a 1 capa.
@@ -674,9 +723,6 @@ export function PalletClientSimV2({
             </div>
           )}
         </div>
-
-
-
 
         {/* Configuración (selects + acciones) */}
         <div className="rounded-lg border bg-white p-3 space-y-3">
@@ -689,7 +735,7 @@ export function PalletClientSimV2({
               value={tipoContenedorId}
               onChange={(e) =>
                 setTipoContenedorId(
-                  e.target.value === "" ? "" : Number(e.target.value),
+                  e.target.value === "" ? "" : Number(e.target.value)
                 )
               }
             >
@@ -736,11 +782,13 @@ export function PalletClientSimV2({
 
             {forceNoMezclar ? (
               <p className="mt-2 text-[11px] text-amber-700">
-                Operativo estable + múltiples SKUs: mezcla deshabilitada (se fuerza NO_MEZCLAR).
+                Operativo estable + múltiples SKUs: mezcla deshabilitada (se
+                fuerza NO_MEZCLAR).
               </p>
             ) : (
               <p className="mt-2 text-[11px] text-slate-500">
-                Si permitís mezcla, el motor puede combinar SKUs en el mismo pallet.
+                Si permitís mezcla, el motor puede combinar SKUs en el mismo
+                pallet.
               </p>
             )}
           </div>
@@ -761,10 +809,16 @@ export function PalletClientSimV2({
               <button
                 type="button"
                 onClick={handleCompareMix}
-                disabled={forceNoMezclar || isPendingPreview || isPendingSave}
+                disabled={!canCompareMix || isPendingPreview || isPendingSave}
                 className="text-xs px-3 py-2 rounded-md border bg-white text-slate-900 hover:bg-slate-50 disabled:opacity-50"
               >
-                {forceNoMezclar ? "Comparar mezcla (bloqueado)" : isPendingPreview ? "Calculando..." : "Comparar mezcla"}
+                {!multiSku
+                  ? "Comparar mezcla (requiere 2+ SKUs)"
+                  : forceNoMezclar
+                    ? "Comparar mezcla (bloqueado)"
+                    : isPendingPreview
+                      ? "Calculando..."
+                      : "Comparar mezcla"}
               </button>
             </div>
 
@@ -775,9 +829,7 @@ export function PalletClientSimV2({
                 disabled={isPendingPreview || isPendingSave}
                 className="px-4 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 disabled:opacity-50"
               >
-                {isPendingPreview
-                  ? "Calculando..."
-                  : "Ver plan / previsualizar"}
+                {isPendingPreview ? "Calculando..." : "Ver plan / previsualizar"}
               </button>
 
               <button
@@ -868,14 +920,25 @@ export function PalletClientSimV2({
             </div>
           ) : (
             (() => {
-              const capacidadTotal = Math.max(1, result.pallet1.cajasTotales);
+              const placed = Math.max(0, safeNumber(result.pallet1.unidadesColocadas, 0));
+
+              // ✅ FIX 1: progreso NO usa cajasTotales (porque suele ser = colocadas).
+              // Usa grilla teórica × capas si existe; si no, cae a "colocadas" para no mentir.
+              const capTeoricaPorCapa = Math.max(0, safeNumber(proRefs?.capTeorica, 0));
+              const capasPlan = Math.max(1, safeNumber(result.pallet1.capas, 1));
+              const capacidadParaProgress =
+                capTeoricaPorCapa > 0
+                  ? capTeoricaPorCapa * capasPlan
+                  : Math.max(1, placed);
+
               const progresoUnidades = Math.min(
                 100,
-                (result.pallet1.unidadesColocadas / capacidadTotal) * 100,
+                (placed / Math.max(1, capacidadParaProgress)) * 100
               );
+
               const ocupacionLibrePct = Math.max(
                 0,
-                100 - result.pallet1.ocupacionLogradaPct,
+                100 - safeNumber(result.pallet1.ocupacionLogradaPct, 0)
               );
 
               return (
@@ -885,17 +948,13 @@ export function PalletClientSimV2({
                     {/* Fila 1 */}
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="rounded-lg border p-3">
-                        <p className="text-xs text-slate-500">
-                          Bultos colocados
-                        </p>
+                        <p className="text-xs text-slate-500">Bultos colocados</p>
 
                         <div className="mt-1 flex items-end justify-between gap-2">
                           <p className="text-2xl font-semibold text-slate-900">
-                            {result.pallet1.unidadesColocadas}
+                            {placed}
                           </p>
-                          <p className="text-[11px] text-slate-500">
-                            de {result.pallet1.cajasTotales}
-                          </p>
+                          <p className="text-[11px] text-slate-500">en pallet #1</p>
                         </div>
 
                         <div className="mt-2 h-2 rounded-full bg-slate-100 overflow-hidden">
@@ -906,7 +965,7 @@ export function PalletClientSimV2({
                         </div>
 
                         <p className="mt-2 text-[11px] text-slate-500">
-                          Capacidad calculada: {result.pallet1.cajasTotales}
+                          Capacidad teórica máxima (grilla × capas): {capacidadParaProgress}
                         </p>
                       </div>
 
@@ -915,6 +974,7 @@ export function PalletClientSimV2({
                         <p className="mt-1 text-2xl font-semibold text-slate-900">
                           {result.pallet1.capas}
                         </p>
+
                         <p className="mt-2 text-[11px] text-slate-500 space-y-1">
                           <span className="block">
                             {proRefs?.isEmpresaBulto
@@ -926,15 +986,12 @@ export function PalletClientSimV2({
                             <span className="block">
                               Bulto usado:{" "}
                               <span className="font-medium">
-                                {proRefs.sampleDim.largo}×
-                                {proRefs.sampleDim.ancho}×
+                                {proRefs.sampleDim.largo}×{proRefs.sampleDim.ancho}×
                                 {proRefs.sampleDim.alto} mm
                               </span>
                             </span>
                           ) : (
-                            <span className="block">
-                              Bulto usado: (sin placements)
-                            </span>
+                            <span className="block">Bulto usado: (sin placements)</span>
                           )}
 
                           {proRefs?.sampleDim ? (
@@ -957,10 +1014,48 @@ export function PalletClientSimV2({
                             </span>
                           </span>
 
+                          {(() => {
+                            const porCapa = Math.max(
+                              1,
+                              safeNumber(result.pallet1.cajasPorCapa, 0)
+                            );
+                            const capas = Math.max(
+                              0,
+                              safeNumber(result.pallet1.capas, 0)
+                            );
+
+                            // ✅ FIX 2: usar "colocadas" (semántica correcta)
+                            const totalColocado = Math.max(
+                              0,
+                              safeNumber(result.pallet1.unidadesColocadas, 0)
+                            );
+
+                            if (capas <= 0) return null;
+
+                            const capasCompletas = Math.floor(totalColocado / porCapa);
+                            const ultima = totalColocado - capasCompletas * porCapa;
+                            const ultimaCapa = ultima === 0 ? porCapa : ultima;
+
+                            return (
+                              <span className="block text-slate-500">
+                                Capas completas:{" "}
+                                <span className="font-medium">
+                                  {Math.min(capas, capasCompletas)}
+                                </span>
+                                {" · "}Última capa:{" "}
+                                <span className="font-medium">
+                                  {ultimaCapa} {proRefs?.labelUnidad ?? "cajas"}
+                                </span>
+                              </span>
+                            );
+                          })()}
+
                           {result.pallet1.referencias?.rotacion2D ? (
                             <span className="block">
                               Rotación 2D:{" "}
-                              <span className="font-medium">{result.pallet1.referencias.rotacion2D}</span>
+                              <span className="font-medium">
+                                {result.pallet1.referencias.rotacion2D}
+                              </span>
                               {result.pallet1.referencias.orientacionElegida ? (
                                 <>
                                   {" · "}Orientación:{" "}
@@ -972,13 +1067,10 @@ export function PalletClientSimV2({
                             </span>
                           ) : null}
 
-
-                          {proRefs?.sobraXmm != null &&
-                            proRefs?.sobraZmm != null ? (
+                          {proRefs?.sobraXmm != null && proRefs?.sobraZmm != null ? (
                             <span className="block text-slate-400">
-                              Hueco esperado por grilla: sobra{" "}
-                              {proRefs.sobraXmm} mm en largo y{" "}
-                              {proRefs.sobraZmm} mm en ancho.
+                              Hueco esperado por grilla: sobra {proRefs.sobraXmm} mm
+                              en largo y {proRefs.sobraZmm} mm en ancho.
                             </span>
                           ) : null}
                         </p>
@@ -989,7 +1081,7 @@ export function PalletClientSimV2({
                     <div className="grid gap-3 sm:grid-cols-3">
                       <div className="rounded-lg border p-3">
                         <p className="text-xs text-slate-500">
-                          Ocupación volumen
+                          Ocupación (hasta altura usada)
                         </p>
                         <p className="mt-1 text-2xl font-semibold text-slate-900">
                           {result.pallet1.ocupacionVolumenPct.toFixed(1)}%
@@ -999,20 +1091,49 @@ export function PalletClientSimV2({
                           <div
                             className="h-full bg-emerald-500"
                             style={{
-                              width: `${Math.min(100, result.pallet1.ocupacionVolumenPct)}%`,
+                              width: `${Math.min(
+                                100,
+                                result.pallet1.ocupacionVolumenPct
+                              )}%`,
                             }}
                           />
                         </div>
 
-                        <p className="mt-2 text-[11px] text-slate-500">
-                          Altura usada: {result.pallet1.alturaTotalM.toFixed(3)}{" "}
-                          m
-                        </p>
+                        {(() => {
+                          const ref = result.pallet1.referencias;
+                          const alturaFisicaM = ref?.alturaFisicaMm
+                            ? ref.alturaFisicaMm / 1000
+                            : null;
+                          const alturaUtilM = ref?.alturaUtilMm
+                            ? ref.alturaUtilMm / 1000
+                            : null;
+                          const alturaUsadaM = ref?.alturaUsadaMm
+                            ? ref.alturaUsadaMm / 1000
+                            : result.pallet1.alturaTotalM;
+
+                          return (
+                            <p className="mt-2 text-[11px] text-slate-500 space-y-0.5">
+                              <span className="block">
+                                Altura usada: {alturaUsadaM.toFixed(3)} m
+                              </span>
+                              {alturaUtilM != null ? (
+                                <span className="block">
+                                  Altura operativa máx: {alturaUtilM.toFixed(3)} m
+                                </span>
+                              ) : null}
+                              {alturaFisicaM != null ? (
+                                <span className="block text-slate-400">
+                                  Altura física: {alturaFisicaM.toFixed(3)} m
+                                </span>
+                              ) : null}
+                            </p>
+                          );
+                        })()}
                       </div>
 
                       <div className="rounded-lg border p-3">
                         <p className="text-xs text-slate-500">
-                          Ocupación total
+                          Ocupación total (sobre altura operativa)
                         </p>
                         <p className="mt-1 text-2xl font-semibold text-slate-900">
                           {result.pallet1.ocupacionLogradaPct.toFixed(1)}%
@@ -1022,21 +1143,45 @@ export function PalletClientSimV2({
                           <div
                             className="h-full bg-amber-500"
                             style={{
-                              width: `${Math.min(100, result.pallet1.ocupacionLogradaPct)}%`,
+                              width: `${Math.min(
+                                100,
+                                result.pallet1.ocupacionLogradaPct
+                              )}%`,
                             }}
                           />
                         </div>
 
                         <p className="mt-2 text-[11px] text-slate-500">
-                          Referencia: volumen completo.
+                          Referencia: volumen máx (altura útil).
                         </p>
                       </div>
 
                       <div className="rounded-lg border p-3">
                         <p className="text-xs text-slate-500">Peso total</p>
-                        <p className="mt-1 text-2xl font-semibold text-slate-900">
-                          {result.pallet1.pesoTotalKg.toFixed(1)} kg
-                        </p>
+                        {(() => {
+                          const pesoPallet = safeNumber(
+                            contenedorSeleccionado?.peso_pallet_kg,
+                            0
+                          );
+                          const pesoTotal = safeNumber(result.pallet1.pesoTotalKg, 0);
+                          const pesoCarga = Math.max(0, pesoTotal - pesoPallet);
+
+                          return (
+                            <>
+                              <p className="mt-1 text-2xl font-semibold text-slate-900">
+                                {pesoTotal.toFixed(1)} kg
+                              </p>
+                              <p className="mt-2 text-[11px] text-slate-500 space-y-0.5">
+                                <span className="block">
+                                  Carga: {pesoCarga.toFixed(1)} kg
+                                </span>
+                                <span className="block text-slate-400">
+                                  Pallet: {pesoPallet.toFixed(1)} kg
+                                </span>
+                              </p>
+                            </>
+                          );
+                        })()}
                         <p className="mt-2 text-[11px] text-slate-500">
                           Pallets req.: {result.palletsRequeridos}
                         </p>
@@ -1051,8 +1196,8 @@ export function PalletClientSimV2({
                         {formatVolumenMm3ToM3(result.pallet1.volumenLibreMm3)}
                       </p>
                       <p className="text-xs text-slate-500">
-                        Aproximadamente {ocupacionLibrePct.toFixed(1)}% del
-                        pallet queda disponible.
+                        Aproximadamente {ocupacionLibrePct.toFixed(1)}% del pallet
+                        queda disponible.
                       </p>
                       <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
                         <div
@@ -1065,9 +1210,7 @@ export function PalletClientSimV2({
                     </div>
 
                     <div className="rounded-md border p-3 space-y-2">
-                      <p className="text-slate-500">
-                        Pallets requeridos (estimación)
-                      </p>
+                      <p className="text-slate-500">Pallets requeridos (estimación)</p>
                       <p className="font-semibold text-lg">
                         {result.palletsRequeridos}
                       </p>
@@ -1087,6 +1230,139 @@ export function PalletClientSimV2({
                       </ul>
                     </div>
                   )}
+
+                  {mixCompare && (
+                    <div className="rounded-lg border bg-white p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">Comparación mezcla (A/B)</p>
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            Se ejecutaron 2 previews: <span className="font-medium">NO_MEZCLAR</span> vs{" "}
+                            <span className="font-medium">PERMITIR_MEZCLA</span>. Se elige el mayor{" "}
+                            <span className="font-medium">ocupación lograda</span>.
+                          </p>
+                        </div>
+
+                        <span
+                          className={[
+                            "text-[11px] px-2 py-1 rounded-full border",
+                            mixCompare.winner === "PERMITIR_MEZCLA"
+                              ? "bg-indigo-50 text-indigo-700 border-indigo-100"
+                              : "bg-slate-50 text-slate-700 border-slate-200",
+                          ].join(" ")}
+                        >
+                          Ganó: {mixCompare.winner}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        {/* OFF */}
+                        <div
+                          className={[
+                            "rounded-md border p-3",
+                            mixCompare.winner === "NO_MEZCLAR"
+                              ? "border-emerald-200 bg-emerald-50"
+                              : "border-slate-200 bg-white",
+                          ].join(" ")}
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-semibold text-slate-800">NO_MEZCLAR</p>
+                            <p className="text-[11px] text-slate-500">1 SKU por pallet</p>
+                          </div>
+
+                          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                            <div>
+                              <p className="text-slate-500">Ocupación lograda</p>
+                              <p className="font-semibold text-slate-900">
+                                {mixCompare.score.off.toFixed(1)}%
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500">Unidades colocadas</p>
+                              <p className="font-semibold text-slate-900">
+                                {safeNumber(mixCompare.off.pallet1.unidadesColocadas, 0)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500">Capas</p>
+                              <p className="font-semibold text-slate-900">
+                                {safeNumber(mixCompare.off.pallet1.capas, 0)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500">Warnings</p>
+                              <p className="font-semibold text-slate-900">
+                                {(mixCompare.off.pallet1.warnings?.length ?? 0)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => setResult(mixCompare.off)}
+                            className="mt-3 w-full text-xs px-3 py-2 rounded-md border bg-white hover:bg-slate-50"
+                          >
+                            Ver este plan (OFF)
+                          </button>
+                        </div>
+
+                        {/* ON */}
+                        <div
+                          className={[
+                            "rounded-md border p-3",
+                            mixCompare.winner === "PERMITIR_MEZCLA"
+                              ? "border-emerald-200 bg-emerald-50"
+                              : "border-slate-200 bg-white",
+                          ].join(" ")}
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-semibold text-slate-800">PERMITIR_MEZCLA</p>
+                            <p className="text-[11px] text-slate-500">mezcla habilitada</p>
+                          </div>
+
+                          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                            <div>
+                              <p className="text-slate-500">Ocupación lograda</p>
+                              <p className="font-semibold text-slate-900">
+                                {mixCompare.score.on.toFixed(1)}%
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500">Unidades colocadas</p>
+                              <p className="font-semibold text-slate-900">
+                                {safeNumber(mixCompare.on.pallet1.unidadesColocadas, 0)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500">Capas</p>
+                              <p className="font-semibold text-slate-900">
+                                {safeNumber(mixCompare.on.pallet1.capas, 0)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500">Warnings</p>
+                              <p className="font-semibold text-slate-900">
+                                {(mixCompare.on.pallet1.warnings?.length ?? 0)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => setResult(mixCompare.on)}
+                            className="mt-3 w-full text-xs px-3 py-2 rounded-md border bg-white hover:bg-slate-50"
+                          >
+                            Ver este plan (ON)
+                          </button>
+                        </div>
+                      </div>
+
+                      <p className="mt-3 text-[11px] text-slate-500">
+                        Nota: el viewer 3D muestra el plan actualmente seleccionado (podés alternar OFF/ON con los botones).
+                      </p>
+                    </div>
+                  )}
+
 
                   {/* Viewer 3D */}
                   <div className="space-y-2">
@@ -1120,7 +1396,7 @@ export function PalletClientSimV2({
         {/* Detalle del lote (derecha) */}
         <details className="rounded-lg border bg-white p-4">
           <summary className="cursor-pointer text-xs font-medium text-slate-700">
-            Detalle del lote
+            Detalle del lote{" "}
             <span className="ml-2 text-[11px] text-slate-500">
               ({loteResumen.length} SKUs)
             </span>

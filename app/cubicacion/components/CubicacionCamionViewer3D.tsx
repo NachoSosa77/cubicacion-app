@@ -8,6 +8,7 @@ import * as THREE from "three";
 type DimMm = { largo: number; ancho: number; alto: number };
 
 type PalletPlacementCamion = {
+  id: string;
   palletPlanId: number;
   dimMm: DimMm;
   posCentroMm: { x: number; y: number; z: number };
@@ -216,9 +217,8 @@ export function CubicacionCamionViewer3D({
 
         <CamionFloor dim={camionDimMm} />
         <CamionShell dim={camionDimMm} />
-
         {placements.map((p) => (
-          <PalletMesh key={p.palletPlanId} p={p} />
+          <PalletMesh key={p.id} p={p} />
         ))}
 
         <AutoFrame

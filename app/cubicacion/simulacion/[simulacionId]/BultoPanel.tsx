@@ -189,6 +189,10 @@ export function BultoPanel({
 }) {
   const [applyLoading, setApplyLoading] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [permiteMezcla, setPermiteMezcla] = useState<boolean>(false);
+  const [porcentajeMezcla, setPorcentajeMezcla] = useState<number>(0.5);
+
+  const hasMultiSkuLote = (lote.items?.length ?? 0) > 1;
 
   // =========================
   // Estado Operativo (C)
@@ -318,6 +322,13 @@ export function BultoPanel({
       0,
     );
 
+    if (permiteMezcla) {
+      warnings.push(
+        "La mezcla de productos requiere un bulto de empresa."
+      );
+    }
+
+
     return {
       candidateKey: "A",
       titulo: "A - Plan básico (restricciones del producto)",
@@ -419,7 +430,7 @@ export function BultoPanel({
     return {
       candidateKey: "B",
       titulo: "B · Recalcular con bultos de empresa",
-      scope: "SKU",
+      scope: permiteMezcla ? "MIXTO" : "SKU",
       items,
       warnings,
       totales: {
@@ -503,6 +514,13 @@ export function BultoPanel({
       (a, x) => a + (isParcialRow(x) ? 1 : 0),
       0,
     );
+
+    if (permiteMezcla) {
+      warnings.push(
+        "La mezcla de productos requiere un bulto de empresa."
+      );
+    }
+
 
     return {
       candidateKey: "C",
@@ -618,7 +636,7 @@ export function BultoPanel({
     return {
       candidateKey: "D",
       titulo: "D · Maximizar ocupación (bulto empresa + unidades)",
-      scope: "SKU",
+      scope: permiteMezcla ? "MIXTO" : "SKU",
       items,
       warnings,
       totales: {
@@ -639,6 +657,24 @@ export function BultoPanel({
         : selected === "C"
           ? candidateC
           : candidateD;
+
+  const isMixEnabled =
+    permiteMezcla && selected !== "A" && hasMultiSkuLote;
+
+
+  const activeWithMix: BultoSimSnapshot = isMixEnabled
+    ? {
+      ...active,
+      scope: "MIXTO",
+      permiteMezcla: true,
+      porcentajeMezcla01: porcentajeMezcla,
+    }
+    : {
+      ...active,
+      scope: "SKU",
+      permiteMezcla: false,
+      porcentajeMezcla01: undefined,
+    };
 
   const setPlanForSku = (tipoProductoId: number, v: string) => {
     setPlanUnitsBySku((prev) => ({ ...prev, [tipoProductoId]: v }));
@@ -666,17 +702,15 @@ export function BultoPanel({
         ? lote.id
         : null;
 
-  const canPublishToLote = effectiveLoteId != null;
 
   const guardarYContinuar = async () => {
-    if (!draftLayout) return;
+    if (selected !== "A" && !draftLayout) return;
 
     setApplyError(null);
     setApplyLoading(true);
 
     try {
-      const snapToApply = { ...active, layout3d: draftLayout };
-
+      const snapToApply = snapForSave;
       // 1) siempre: simulación
       await applyBultoSnapshotToSimulacion({
         simulacionId,
@@ -734,6 +768,34 @@ export function BultoPanel({
     );
   }, [active.items, viewerSkuId]);
 
+  const snapForLayout = useMemo(() => {
+    // A = SIEMPRE 1 SKU por bulto (el del visor)
+    if (selected === "A" && activeItemForViewer) {
+      return { ...active, scope: "SKU" as const, items: [activeItemForViewer] };
+    }
+    // En B/C/D queda como esté (si luego soportás MIXTO, será multi)
+    return active;
+  }, [selected, active, activeItemForViewer])
+
+  const snapForSave = useMemo<BultoSimSnapshot>(() => {
+    // A: guardamos TODO el snapshot completo (todos los SKUs) y SIN layout3d
+    if (selected === "A") {
+      return {
+        ...candidateA,
+        scope: "SKU",
+        permiteMezcla: false,
+        porcentajeMezcla01: undefined,
+      };
+    }
+
+    // B/C/D: guardamos el snapshot con mezcla si aplica + layout3d
+    return {
+      ...activeWithMix,
+      layout3d: draftLayout ?? undefined,
+    };
+  }, [selected, candidateA, activeWithMix, draftLayout]);
+
+
   const unidadDimForViewer = useMemo(() => {
     const it = loteItemBySku.get(activeItemForViewer?.tipo_producto_id ?? -1);
     return it ? tryDimUnidad(it) : null;
@@ -748,6 +810,8 @@ export function BultoPanel({
     setDraftLayout(null);
     setDraftKey(null);
   };
+
+
 
   // 1) Si cambio de candidato A/B/C, el layout previo ya no es válido
   useEffect(() => {
@@ -772,9 +836,11 @@ export function BultoPanel({
     if (!exists) setViewerSkuId(skuOptions[0].tipo_producto_id);
   }, [skuOptions, viewerSkuId]);
 
+  useEffect(() => {
+    if (selected === "A") clearLayouts();
+  }, [selected, viewerSkuId]);
+
   console.log("lote", lote);
-  console.log("simulacionId", simulacionId);
-  console.log("simulacionLoteId", simulacionLoteId);
 
   // =========================
   // Render
@@ -858,6 +924,24 @@ export function BultoPanel({
                   : "Operativo (D)"}
             </p>
 
+            <div className="rounded-md border bg-white p-3 space-y-2">
+              <label className="flex items-center gap-2 text-xs text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={permiteMezcla}
+                  onChange={(e) => setPermiteMezcla(e.target.checked)}
+                />
+                Permitir mezcla de productos dentro del bulto
+              </label>
+
+              {permiteMezcla && (
+                <p className="text-[11px] text-slate-500">
+                  Al mezclar productos, el bulto debe ser un contenedor estándar de la empresa.
+                </p>
+              )}
+            </div>
+
+
             {/* selector bulto empresa: B y D */}
             {(selected === "B" || selected === "D") &&
               empresaBultos.length > 0 && (
@@ -889,6 +973,35 @@ export function BultoPanel({
                   </div>
                 </div>
               )}
+
+            {(selected === "B" || selected === "C" || selected === "D") && (
+              <div className="rounded-md border bg-white p-3 space-y-2">
+                <label className="text-xs font-medium text-slate-700">
+                  Mezcla de productos en el bulto
+                </label>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={Math.round(porcentajeMezcla * 100)}
+                    onChange={(e) =>
+                      setPorcentajeMezcla(
+                        Math.min(1, Math.max(0.01, Number(e.target.value) / 100)),
+                      )
+                    }
+                    className="w-20 border rounded-md px-2 py-1 text-sm"
+                  />
+                  <span className="text-xs text-slate-600">% del bulto objetivo</span>
+                </div>
+
+                <p className="text-[11px] text-slate-500">
+                  Indica qué porcentaje del volumen del bulto querés ocupar con mezcla.
+                </p>
+              </div>
+            )}
+
 
             {/* demanda editable: C y D */}
             {(selected === "C" || selected === "D") && (
@@ -1036,17 +1149,25 @@ export function BultoPanel({
                 onClick={async () => {
                   setLayoutError(null);
                   setApplyError(null);
+
+                  // ✅ dejá SOLO esta validación (la otra duplicada sacala)
+                  if (
+                    activeWithMix.permiteMezcla &&
+                    activeWithMix.scope === "MIXTO" &&
+                    !bultoEmpresaIdGlobal
+                  ) {
+                    setLayoutError("Para mezclar productos debés seleccionar un bulto de empresa.");
+                    return; // ✅ retorna antes de setLayoutLoading(true)
+                  }
+
                   setLayoutLoading(true);
+
                   try {
                     const res = await previewBultoLayout3D({
                       loteId: effectiveLoteId ?? undefined,
-                      simulacionId:
-                        typeof simulacionId === "number"
-                          ? simulacionId
-                          : undefined,
-                      snap: active,
-                      bultoOverrideMm:
-                        activeItemForViewer?.dim_bulto_mm ?? null,
+                      simulacionId: typeof simulacionId === "number" ? simulacionId : undefined,
+                      snap: snapForLayout, // ✅ ACÁ
+                      bultoOverrideMm: activeItemForViewer?.dim_bulto_mm ?? null,
                     });
 
                     setDraftLayout(res.layout);
@@ -1060,13 +1181,12 @@ export function BultoPanel({
                     });
                   } catch (e) {
                     console.error(e);
-                    setLayoutError(
-                      "No se pudo generar el layout 3D del bulto.",
-                    );
+                    setLayoutError("No se pudo generar el layout 3D del bulto.");
                   } finally {
                     setLayoutLoading(false);
                   }
                 }}
+
                 className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 text-sm disabled:opacity-50"
               >
                 {layoutLoading ? "Generando layout..." : "Ver layout en visor"}

@@ -83,14 +83,14 @@ export function PalletClientV2({
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              {/* <div className="flex items-center gap-2">
                 <a
                   href={`/cubicacion/camion/${lote.id}`}
                   className="px-3 py-2 rounded-md border bg-white text-slate-900 hover:bg-slate-50 text-sm"
                 >
                   Ir a Camión
                 </a>
-              </div>
+              </div> */}
             </div>
           </div>
 

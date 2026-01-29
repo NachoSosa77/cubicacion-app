@@ -645,17 +645,16 @@ model EmpresaBulto {
 
   es_preferido Boolean @default(false)
 
-  // ✅ lado inverso requerido por Prisma
-  cubicaciones             Cubicacion[]
-  cubicacionConfiguracions CubicacionConfiguracion[]
-  bultoArmados             BultoArmado[]
-  cubicacionLotes          CubicacionLote[]
-  cubicacionBultoPlans     CubicacionBultoPlan[]
+  // ... tus otros inversos
+
+  // ✅ inverso para la FK nueva:
+  cubicacionLoteItems CubicacionLoteItem[]
 
   @@unique([empresa_id, codigo])
   @@index([empresa_id, habilitado])
   @@map("empresa_bulto")
 }
+
 
 model Transporte {
   id Int @id @default(autoincrement())
@@ -726,8 +725,6 @@ model CubicacionLoteItem {
   tipo_producto_id Int
 
   cantidad_unidades Int
-
-  // lo que seleccionó/derivó el sistema al guardar (consistencia)
   cantidad_bultos    Int  @default(1)
   unidades_por_bulto Int?
 
@@ -736,26 +733,28 @@ model CubicacionLoteItem {
 
   volumen_total_m3 Float
 
-  // snapshot para reproducibilidad
   dim_unidad_mm  Json?  @db.Json
   peso_unidad_kg Float?
 
-  // NUEVO: dimensiones de bulto usadas al guardar (A/C)
-  dim_bulto_mm Json? @db.Json
+  dim_bulto_mm      Json? @db.Json
+  bulto_empresa_id  Int?   // FK nullable
 
-  // NUEVO: trazabilidad de dónde salió el bulto aplicado
   bulto_fuente BultoFuente @default(CATALOGO)
-
-  created_at DateTime @default(now())
+  created_at   DateTime    @default(now())
 
   lote          CubicacionLote @relation(fields: [lote_id], references: [id], onDelete: Cascade)
   tipo_producto TipoProducto   @relation(fields: [tipo_producto_id], references: [id])
 
+  // ✅ ESTA ES LA CLAVE:
+  bulto_empresa  EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id], onDelete: SetNull)
+
   @@index([lote_id], map: "idx_lote_item")
   @@index([tipo_producto_id])
   @@index([bulto_fuente], map: "idx_lote_item_bulto_fuente")
+  @@index([bulto_empresa_id], map: "idx_lote_item_bulto_empresa_id")
   @@map("cubicacion_lote_item")
 }
+
 
 model CubicacionPalletPlan {
   id Int @id @default(autoincrement())

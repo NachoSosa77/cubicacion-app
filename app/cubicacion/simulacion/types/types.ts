@@ -45,7 +45,9 @@ export type BultoSimSnapshotItem = {
 export type BultoSimSnapshot = {
   candidateKey: "A" | "B" | "C" | "D";
   titulo: string;
-  scope: "SKU";
+  scope: "SKU" | "MIXTO";
+  permiteMezcla?: boolean;
+  porcentajeMezcla01?: number; // 0..1
   items: BultoSimSnapshotItem[];
   warnings: string[];
   totales: {

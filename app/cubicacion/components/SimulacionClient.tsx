@@ -102,6 +102,8 @@ type CamionPlanStatus = "BORRADOR" | "SELECCIONADO" | "DESCARTADO";
 type DimMm = { largo: number; ancho: number; alto: number };
 
 type CamionPlacement = {
+  /** ✅ clave estable para React + para evitar choque de tipos */
+  id: string;
   palletPlanId: number;
   dimMm: DimMm;
   posCentroMm: { x: number; y: number; z: number };
@@ -130,6 +132,22 @@ function pill(text: string) {
       {text}
     </span>
   );
+}
+
+/* =========================
+   Helpers (camión)
+========================= */
+
+function ensurePlanHasPlacementIds(plan: CamionPlanResult): CamionPlanResult {
+  const placements = Array.isArray(plan?.placements) ? plan.placements : [];
+  return {
+    ...plan,
+    placements: placements.map((p: any, idx: number) => ({
+      ...p,
+      // ✅ id estable + único (si el server no lo manda todavía)
+      id: String(p?.id ?? `cp-${p?.palletPlanId ?? "x"}-${idx}`),
+    })),
+  };
 }
 
 /* =========================
@@ -246,7 +264,7 @@ export function SimulacionClient({
     if (!bultoSnap) return lote;
 
     const itemsByTipoProductoId = new Map(
-      bultoSnap.items.map((x) => [x.tipo_producto_id, x])
+      bultoSnap.items.map((x) => [x.tipo_producto_id, x]),
     );
 
     return {
@@ -272,7 +290,7 @@ export function SimulacionClient({
     };
   }, [lote, bultoSnap]);
 
-   useEffect(() => {
+  useEffect(() => {
     if (appliedRef.current) return;
     if (!initialStep) return;
 
@@ -283,16 +301,16 @@ export function SimulacionClient({
   }, [initialStep]);
 
   useEffect(() => {
-  if (!appliedRef.current) return;
+    if (!appliedRef.current) return;
 
-  const stepParam = searchParams.get("step");
-  if (!stepParam) return;
+    const stepParam = searchParams.get("step");
+    if (!stepParam) return;
 
-  const params = new URLSearchParams(searchParams.toString());
-  params.delete("step");
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("step");
 
-  router.replace(`?${params.toString()}`, { scroll: false });
-}, [router, searchParams]);
+    router.replace(`?${params.toString()}`, { scroll: false });
+  }, [router, searchParams]);
 
   // ✅ Sync + refresh + go to step 1
   const handleContinuarABulto = () => {
@@ -303,8 +321,25 @@ export function SimulacionClient({
     });
   };
 
-  const handlePreviewCamion = (params: { transporteId: number }) => {
-    return onPreviewCamion(params);
+  /**
+   * ✅ Wrapper: normaliza la respuesta del server para que SIEMPRE tenga placements con `id`
+   * Esto arregla:
+   * - El error de TS (faltaba `id`)
+   * - El warning de React (keys duplicadas) si tu viewer usa p.id como key
+   */
+  const handlePreviewCamion = async (params: { transporteId: number }) => {
+    const res = await onPreviewCamion(params);
+
+    const plans = res.plans_by_strategy;
+
+    return {
+      ...res,
+      plans_by_strategy: {
+        ESTABLE: ensurePlanHasPlacementIds(plans.ESTABLE),
+        OPTIMIZAR: ensurePlanHasPlacementIds(plans.OPTIMIZAR),
+        DESCARGA_RAPIDA: ensurePlanHasPlacementIds(plans.DESCARGA_RAPIDA),
+      },
+    } satisfies CamionPreviewResponse;
   };
 
   const handleGuardarCamion = (params: {
@@ -338,23 +373,6 @@ export function SimulacionClient({
                   {pill(`Productos: ${productosPlan?.length ?? 0}`)}
                 </div>
               </div>
-
-              {lote ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <a
-                    href={`/cubicacion/pallet/${lote.id}`}
-                    className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 text-sm"
-                  >
-                    Flujo actual: Pallet
-                  </a>
-                  <a
-                    href={`/cubicacion/camion/${lote.id}`}
-                    className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 text-sm"
-                  >
-                    Flujo actual: Camión
-                  </a>
-                </div>
-              ) : null}
             </div>
           </header>
 
@@ -390,11 +408,7 @@ export function SimulacionClient({
                           : "text-slate-600"
                       }
                     >
-                      {hasBulto
-                        ? "Aplicado"
-                        : hasProductos
-                        ? "Listo"
-                        : "Bloqueado"}
+                      {hasBulto ? "Aplicado" : hasProductos ? "Listo" : "Bloqueado"}
                     </span>
                   </span>
 
@@ -423,9 +437,7 @@ export function SimulacionClient({
                     3) Camión:{" "}
                     <span
                       className={
-                        camionEnabled
-                          ? "text-indigo-700 font-medium"
-                          : "text-slate-600"
+                        camionEnabled ? "text-indigo-700 font-medium" : "text-slate-600"
                       }
                     >
                       {camionEnabled ? "Listo" : lote ? "Pendiente" : "Requiere lote"}

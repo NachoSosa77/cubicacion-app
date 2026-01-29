@@ -21,11 +21,12 @@ function toDimMmJson(v: any): Prisma.InputJsonValue | undefined {
   return { largo, ancho, alto } as Prisma.InputJsonValue;
 }
 
-function mapFuente(candidateKey: "A" | "B" | "C") {
+function mapFuente(candidateKey: "A" | "B" | "C" | "D") {
   // Enum Prisma esperado: BultoFuente { CATALOGO, OPERATIVO, EMPRESA_BULTO }
-  if (candidateKey === "A") return "OPERATIVO" as const;
-  if (candidateKey === "C") return "EMPRESA_BULTO" as const;
-  return "CATALOGO" as const; // B
+  if (candidateKey === "A") return "CATALOGO" as const;
+  if (candidateKey === "B" || candidateKey === "D")
+    return "EMPRESA_BULTO" as const;
+  return "OPERATIVO" as const; // C
 }
 
 /**
@@ -83,42 +84,47 @@ export async function applyBultoSnapshotToLote(params: {
 
   const bultoFuente = mapFuente(snap.candidateKey);
 
-  await Promise.all(
-    snap.items.map(async (s) => {
-      const tipoId = Number(s.tipo_producto_id);
-      if (!Number.isFinite(tipoId) || tipoId <= 0) return;
+  const ops: Prisma.PrismaPromise<any>[] = [];
 
-      const row = itemByTipoProductoId.get(tipoId);
-      if (!row) return;
+  for (const s of snap.items) {
+    const tipoId = Number(s.tipo_producto_id);
+    if (!Number.isFinite(tipoId) || tipoId <= 0) continue;
 
-      const unidadesPlan = toPosInt(s.unidades_planificadas, 0);
-      const cap = toPosInt(s.unidades_por_bulto, 0);
-      const bultos = toPosInt(s.cantidad_bultos, 0);
+    const row = itemByTipoProductoId.get(tipoId);
+    if (!row) continue;
 
-      const { sobrante, ultimo } = calcUsoReal(unidadesPlan, cap, bultos);
+    const unidadesPlan = toPosInt(s.unidades_planificadas, 0);
+    const cap = toPosInt(s.unidades_por_bulto, 0);
+    const bultos = toPosInt(s.cantidad_bultos, 0);
 
-      // dim_bulto_mm: SOLO si viene; si no, no lo tocamos.
-      const dimBultoMm = toDimMmJson(s.dim_bulto_mm);
+    const { sobrante, ultimo } = calcUsoReal(unidadesPlan, cap, bultos);
 
-      await prisma.cubicacionLoteItem.update({
+    const dimBultoMm = toDimMmJson(s.dim_bulto_mm);
+
+    const bultoEmpresaId =
+      snap.candidateKey === "B" || snap.candidateKey === "D"
+        ? Number(s.audit?.bultoEmpresaId ?? 0) || null
+        : undefined; // <- en vez de null
+
+    ops.push(
+      prisma.cubicacionLoteItem.update({
         where: { id: row.id },
         data: {
           cantidad_unidades: unidadesPlan,
           unidades_por_bulto: cap > 0 ? cap : null,
           cantidad_bultos: bultos > 0 ? bultos : 0,
-
-          // “uso real”
           sobrante_unidades: sobrante,
           unidades_en_ultimo_bulto: ultimo,
-
-          // si viene dim válida, la guardamos; si no, no tocamos el valor previo
           dim_bulto_mm: dimBultoMm ?? undefined,
-
           bulto_fuente: bultoFuente,
+          bulto_empresa_id: bultoEmpresaId,
         },
-      });
-    }),
-  );
+      }),
+    );
+  }
+
+  if (ops.length === 0) return { ok: true };
+  await prisma.$transaction(ops);
 
   return { ok: true };
 }

@@ -439,6 +439,22 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     }),
   );
 
+  console.log("[PALLET_PLAN_RESUMEN]", {
+    palletDimMm,
+    alturaUtilMm: maxAlturaMm,
+    cajasTotales,
+    cajasPorCapa: cajasPorCapaRef,
+    capas,
+    alturaUsadaMm,
+    pesoTotalKg: pesoActualKg,
+    ocupacionBasePct,
+    ocupacionVolumenPct,
+    ocupacionLogradaPct,
+    volumenCajasMm3,
+    volumenMaxMm3,
+    orientacionElegida,
+  });
+
   return {
     palletsRequeridos,
     pallet1: {
