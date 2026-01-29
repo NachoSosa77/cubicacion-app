@@ -88,21 +88,22 @@ export async function previewPalletPlan(params: {
 
   mixPolicy: "NO_MEZCLAR" | "PERMITIR_MEZCLA";
 
-  // ✅ Nuevo: solo 2 modos (sin duplicados)
+  // ✅ Nuevo: solo 2 modos
   objective: "OPERATIVO_ESTABLE" | "OPERATIVO_PARAMETRIZABLE";
 
   // ✅ Feature independiente del objective
   rotacion2D?: "ON" | "OFF";
 
-  // ✅ Modo PRO: parámetros opcionales (solo se usan si objective=OPERATIVO_PARAMETRIZABLE)
+  // ✅ PRO: parámetros opcionales (solo si objective=OPERATIVO_PARAMETRIZABLE)
   parametros?: {
-    limiteBultos?: number | null; // override del objetivo de bultos (clamp a supply real)
-    limiteCapas?: number | null; // 1..N (clamp a altura/pallet)
+    // ✅ NUEVOS NOMBRES (como en el client)
+    bultosSimulados?: number | null; // permite pasar MÁS que el supply para stress-test
+    capasMaxOverride?: number | null; // límite de capas deseado (además de altura/peso)
     objetivoOcupacion01?: number | null; // 0..1
     apilableOverride?: boolean | null; // false => forzar NO apilable (max 1 capa)
   } | null;
 
-  // legacy — mantenemos por compatibilidad
+  // legacy — compat
   objetivoUnidades?: number; // bultos
   objetivoOcupacion?: number; // 0..1
   modoSimulacion?: boolean;
@@ -176,10 +177,12 @@ export async function previewPalletPlan(params: {
   const snapBultoId =
     snapBultoIds.size === 1 ? Array.from(snapBultoIds)[0] : null;
 
-  if (lote.tipo_bulto === "EMPRESA_BULTO") {
+  if ((lote as any).tipo_bulto === "EMPRESA_BULTO") {
     if (snapBultoIds.size > 1) {
       throw new Error(
-        `Snapshot trae múltiples bultoEmpresaId (${Array.from(snapBultoIds).join(",")}). En modo EMPRESA_BULTO operamos con 1 solo bulto global.`,
+        `Snapshot trae múltiples bultoEmpresaId (${Array.from(
+          snapBultoIds,
+        ).join(",")}). En modo EMPRESA_BULTO operamos con 1 solo bulto global.`,
       );
     }
 
@@ -253,7 +256,6 @@ export async function previewPalletPlan(params: {
         1,
         toNumber((tp as any).unidad_entra_por_bulto, 1),
       );
-
       unidadesPorBulto = unidadesPorBultoSnapshot ?? unidadesPorBultoFallback;
 
       const cantidadBultosSnapshot =
@@ -273,9 +275,7 @@ export async function previewPalletPlan(params: {
       );
     }
 
-    // DIM BULT0 (regla profesional)
-    // - EMPRESA_BULTO: SIEMPRE dim del bulto empresa (global), ignorar dimSnap / dimDb / catálogo
-    // - PRODUCTO_ESTANDAR: preferimos snap/db y fallback a catálogo
+    // DIM BULTO (regla profesional)
     const dimSnap = dimFromAny(snap?.dim_bulto_mm);
     const dimDb = dimFromAny((it as any).dim_bulto_mm);
 
@@ -363,23 +363,20 @@ export async function previewPalletPlan(params: {
   }
 
   // 8) Objetivos: prioridad PRO > legacy > supply
-
-  // legacy objetivo unidades
-  const legacyLimiteBultos =
+  //    ✅ PRO: bultosSimulados NO clampa contra supply (sirve para stress-test/capacidad)
+  const legacyObjetivoUnidades =
     objetivoUnidades != null && toNumber(objetivoUnidades, 0) > 0
       ? toNumber(objetivoUnidades, 0)
       : null;
 
-  // PRO límite bultos
-  const proLimiteBultos =
-    parametros?.limiteBultos != null && toNumber(parametros.limiteBultos, 0) > 0
-      ? toNumber(parametros.limiteBultos, 0)
+  const proBultosSimulados =
+    parametros?.bultosSimulados != null &&
+    toNumber(parametros.bultosSimulados, 0) > 0
+      ? toNumber(parametros.bultosSimulados, 0)
       : null;
 
-  const objetivoUnidadesEfectivo = Math.min(
-    proLimiteBultos ?? legacyLimiteBultos ?? bultosDisponibles,
-    bultosDisponibles,
-  );
+  const objetivoUnidadesEfectivo =
+    proBultosSimulados ?? legacyObjetivoUnidades ?? bultosDisponibles;
 
   // ocupación 0..1: prioridad PRO > legacy
   const legacyObjOcup =
@@ -407,24 +404,34 @@ export async function previewPalletPlan(params: {
   const rotacion2DEfectiva: "ON" | "OFF" =
     objective === "OPERATIVO_ESTABLE" ? "OFF" : (rotacion2D ?? "OFF");
 
-  // ✅ modo simulación: por tu flujo lo dejamos default true
-  const modoSimulacionEfectivo = modoSimulacion ?? true;
+  // ✅ modo simulación:
+  // - si el usuario pidió bultosSimulados, es claramente un stress-test => true
+  const modoSimulacionEfectivo =
+    proBultosSimulados != null ? true : (modoSimulacion ?? true);
 
   // ✅ parámetros PRO que realmente usa el motor
+  //    OJO: el motor hoy consume `limiteCapas`, así que mapeamos capasMaxOverride -> limiteCapas
+  const apilableOverride =
+    typeof parametros?.apilableOverride === "boolean"
+      ? parametros.apilableOverride
+      : null;
+
+  const proCapasMaxOverride =
+    parametros?.capasMaxOverride != null &&
+    toNumber(parametros.capasMaxOverride, 0) > 0
+      ? Math.floor(toNumber(parametros.capasMaxOverride, 0))
+      : null;
+
+  // Si forzás NO apilable, coherentemente 1 capa
+  const limiteCapasEfectivo =
+    apilableOverride === false ? 1 : proCapasMaxOverride;
+
   const parametrosMotor =
     objective === "OPERATIVO_PARAMETRIZABLE"
       ? {
-          // el motor NO usa limiteBultos hoy (lo usamos afuera como objetivoUnidades)
-          limiteCapas:
-            parametros?.limiteCapas != null &&
-            toNumber(parametros.limiteCapas, 0) > 0
-              ? Math.floor(toNumber(parametros.limiteCapas, 0))
-              : null,
+          limiteCapas: limiteCapasEfectivo,
           objetivoOcupacion01: objetivoOcupacion01Efectivo ?? null,
-          apilableOverride:
-            typeof parametros?.apilableOverride === "boolean"
-              ? parametros.apilableOverride
-              : null,
+          apilableOverride,
         }
       : null;
 
@@ -465,6 +472,7 @@ export async function previewPalletPlan(params: {
       rotacion2DEfectiva,
       parametrosMotor,
     },
+    parametrosInput: parametros ?? null,
     mixPolicyInput: mixPolicy,
     mixPolicyEfectiva,
     multiSku,

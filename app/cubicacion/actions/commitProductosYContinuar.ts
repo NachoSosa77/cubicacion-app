@@ -6,31 +6,52 @@ export async function commitProductosYContinuar(simulacionId: number) {
   const { loteId } = await prisma.$transaction(async (tx) => {
     const sim = await tx.cubicacionSimulacion.findUnique({
       where: { id: simulacionId },
+      select: { id: true, empresa_id: true, titulo: true, lote_id: true },
     });
     if (!sim) throw new Error("Simulación no encontrada.");
 
-    // asegurar lote
+    // =========================================================
+    // ASEGURAR LOTE (este flujo SIEMPRE nace en PRODUCTO_ESTANDAR)
+    // =========================================================
     let loteId = sim.lote_id ?? null;
+
     if (!loteId) {
       const lote = await tx.cubicacionLote.create({
         data: {
           empresa_id: sim.empresa_id,
           descripcion: sim.titulo ?? "Lote generado por simulación",
           packing_policy: "OPERATIVO_AGRUPADO",
-          tipo_bulto: "EMPRESA_BULTO",
+
+          // ✅ CLAVE: antes de elegir bulto empresa
+          tipo_bulto: "PRODUCTO_ESTANDAR",
+          bulto_empresa_id: null,
+
           unidades_totales: 0,
           bultos_totales: 0,
         },
+        select: { id: true },
       });
+
       loteId = lote.id;
 
       await tx.cubicacionSimulacion.update({
         where: { id: simulacionId },
         data: { lote_id: loteId },
       });
+    } else {
+      // ✅ CLAVE: si ya existía el lote, lo normalizamos SIEMPRE para este flujo
+      await tx.cubicacionLote.update({
+        where: { id: loteId },
+        data: {
+          tipo_bulto: "PRODUCTO_ESTANDAR",
+          bulto_empresa_id: null,
+        },
+      });
     }
 
-    // leer productos
+    // =========================
+    // LEER PRODUCTOS
+    // =========================
     const productos = await tx.cubicacionProductoPlan.findMany({
       where: { simulacion_id: simulacionId },
       select: {
@@ -41,9 +62,12 @@ export async function commitProductosYContinuar(simulacionId: number) {
         peso_unidad_kg: true,
       } as any,
     });
+
     if (!productos.length) throw new Error("No hay productos cargados.");
 
-    // resync items
+    // =========================
+    // RESYNC ITEMS
+    // =========================
     await tx.cubicacionLoteItem.deleteMany({ where: { lote_id: loteId } });
 
     await tx.cubicacionLoteItem.createMany({
@@ -53,7 +77,7 @@ export async function commitProductosYContinuar(simulacionId: number) {
         cantidad_unidades: Number(p.cantidad_unidades ?? 0),
         cantidad_bultos: 0,
         unidades_por_bulto: null,
-        volumen_total_m3: 0, // o calcVolumenTotalM3(p)
+        volumen_total_m3: 0, // TODO: calcVolumenTotalM3(p) si querés
         dim_unidad_mm: p.dim_unidad_mm ?? null,
         peso_unidad_kg: p.peso_unidad_kg ?? null,
       })),

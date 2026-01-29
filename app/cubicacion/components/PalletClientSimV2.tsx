@@ -113,17 +113,19 @@ type Objective = "OPERATIVO_ESTABLE" | "OPERATIVO_PARAMETRIZABLE";
 type Rotacion2D = "ON" | "OFF";
 
 type PalletParametros = {
-  limiteBultos?: number | null;
-  limiteCapas?: number | null;
-  objetivoOcupacion01?: number | null; // 0..1
+  // ✅ PRO: stress test y override
+  bultosSimulados?: number | null; // objetivo de bultos a intentar colocar (puede ser > lote real)
+  capasMaxOverride?: number | null; // máximo de capas permitido (además de altura/peso)
+  objetivoOcupacion01?: number | null; // 0..1 (opcional)
   apilableOverride?: boolean | null; // false => NO apilable
 } | null;
+
 interface Props {
   empresaId: number;
   lote: ClientLote;
   contenedores: ClientContenedor[];
   bultoSnap: BultoSimSnapshot | null;
-  onSaved?: (palletPlanId: number) => void; // ✅
+  onSaved?: (palletPlanId: number) => void;
 }
 
 /* =========================
@@ -146,10 +148,6 @@ function formatDimMm(d: { largo: number; ancho: number; alto: number }) {
 
 function formatVolumenMm3ToM3(volumenMm3: number) {
   return `${(volumenMm3 / 1_000_000_000).toFixed(3)} m³`;
-}
-
-function mmToM(mm: number) {
-  return (mm / 1000).toFixed(3);
 }
 
 function tryDimMm(v: any): DimMm | null {
@@ -177,12 +175,11 @@ export function PalletClientSimV2({
   const [tipoContenedorId, setTipoContenedorId] = useState<number | "">("");
   const [mixPolicy, setMixPolicy] = useState<MixPolicy>("PERMITIR_MEZCLA");
   const [objective, setObjective] = useState<Objective>("OPERATIVO_ESTABLE");
-
   const [rotacion2D, setRotacion2D] = useState<Rotacion2D>("OFF");
 
-  // Parámetros PRO (solo si objective=OPERATIVO_PARAMETRIZABLE)
-  const [proLimiteBultos, setProLimiteBultos] = useState<string>(""); // input string -> number
-  const [proLimiteCapas, setProLimiteCapas] = useState<string>("");
+  // ✅ PRO (solo si objective=OPERATIVO_PARAMETRIZABLE)
+  const [proBultosSimulados, setProBultosSimulados] = useState<string>(""); // objetivo bultos a intentar
+  const [proCapasMaxOverride, setProCapasMaxOverride] = useState<string>(""); // máximo capas permitido
   const [proObjetivoOcupacion, setProObjetivoOcupacion] = useState<string>(""); // 0..1
   const [proApilableOverride, setProApilableOverride] = useState<
     "AUTO" | "NO_APILABLE"
@@ -194,8 +191,6 @@ export function PalletClientSimV2({
   const [isPendingPreview, startPreview] = useTransition();
   const [isPendingSave, startSave] = useTransition();
   const [savedId, setSavedId] = useState<number | null>(null);
-
-  const [showLoteDetalle, setShowLoteDetalle] = useState<boolean>(false);
 
   const multiSku = useMemo(() => (lote.items?.length ?? 0) > 1, [lote.items]);
 
@@ -214,9 +209,6 @@ export function PalletClientSimV2({
     if (!result) return null;
 
     const pallet = result.pallet1.palletDimMm;
-
-    // Tomamos una dimensión "representativa" desde el primer placement (si existe)
-    // OJO: en EMPRESA_BULTO esto es el bulto, no la unidad.
     const sampleDim = result.pallet1.placements?.[0]?.dimMm ?? null;
 
     const nx =
@@ -231,7 +223,6 @@ export function PalletClientSimV2({
 
     const capTeorica = Math.max(0, nx * nz);
 
-    // Para explicar huecos (ej: pallet 1000 y bulto 600 -> sobra 400)
     const sobraXmm =
       sampleDim && sampleDim.largo > 0
         ? pallet.largo - nx * sampleDim.largo
@@ -262,10 +253,7 @@ export function PalletClientSimV2({
           ? Number(it.unidades_por_bulto)
           : null;
 
-      const unPorBultoFallback = safeNumber(
-        it.tipo_producto.unidad_entra_por_bulto,
-        0,
-      );
+      const unPorBultoFallback = safeNumber(it.tipo_producto.unidad_entra_por_bulto, 0);
       const unPorBulto = unPorBultoSnapshot ?? unPorBultoFallback;
 
       const bultosSnapshot = safeNumber(it.cantidad_bultos, 0);
@@ -306,7 +294,7 @@ export function PalletClientSimV2({
     });
   }, [lote.items, lote.tipo_bulto]);
 
-    useEffect(() => {
+  useEffect(() => {
     if (forceNoMezclar && mixPolicy !== "NO_MEZCLAR") {
       setMixPolicy("NO_MEZCLAR");
     }
@@ -339,18 +327,18 @@ export function PalletClientSimV2({
     }
 
     // =========================
-    // PRO: parseo parámetros (solo si parametrizable)
+    // PRO: parseo parámetros
     // =========================
     const isPro = objective === "OPERATIVO_PARAMETRIZABLE";
 
-    const parsedLimiteBultos =
-      isPro && proLimiteBultos.trim() !== "" && safeNumber(proLimiteBultos, 0) > 0
-        ? Math.floor(safeNumber(proLimiteBultos, 0))
+    const parsedBultosSimulados =
+      isPro && proBultosSimulados.trim() !== "" && safeNumber(proBultosSimulados, 0) > 0
+        ? Math.floor(safeNumber(proBultosSimulados, 0))
         : null;
 
-    const parsedLimiteCapas =
-      isPro && proLimiteCapas.trim() !== "" && safeNumber(proLimiteCapas, 0) > 0
-        ? Math.floor(safeNumber(proLimiteCapas, 0))
+    const parsedCapasMaxOverride =
+      isPro && proCapasMaxOverride.trim() !== "" && safeNumber(proCapasMaxOverride, 0) > 0
+        ? Math.floor(safeNumber(proCapasMaxOverride, 0))
         : null;
 
     const parsedObjetivoOcupacion01 =
@@ -359,7 +347,11 @@ export function PalletClientSimV2({
         : null;
 
     if (parsedObjetivoOcupacion01 != null) {
-      if (!Number.isFinite(parsedObjetivoOcupacion01) || parsedObjetivoOcupacion01 < 0 || parsedObjetivoOcupacion01 > 1) {
+      if (
+        !Number.isFinite(parsedObjetivoOcupacion01) ||
+        parsedObjetivoOcupacion01 < 0 ||
+        parsedObjetivoOcupacion01 > 1
+      ) {
         setError("En modo PRO, el objetivo de ocupación debe estar entre 0 y 1 (ej: 0.50).");
         return null;
       }
@@ -368,17 +360,21 @@ export function PalletClientSimV2({
     const apilableOverride: boolean | null =
       isPro && proApilableOverride === "NO_APILABLE" ? false : null;
 
+    // Si forzás NO apilable, 1 capa es la única opción coherente
+    const capasMaxOverrideEfectiva =
+      apilableOverride === false ? 1 : parsedCapasMaxOverride;
+
     const parametros: PalletParametros =
       isPro
         ? {
-          limiteBultos: parsedLimiteBultos,
-          limiteCapas: parsedLimiteCapas,
+          bultosSimulados: parsedBultosSimulados,
+          capasMaxOverride: capasMaxOverrideEfectiva,
           objetivoOcupacion01: parsedObjetivoOcupacion01,
           apilableOverride,
         }
         : null;
 
-    // En operativo estable: rotación OFF sí o sí (profesional/consistente)
+    // En operativo estable: rotación OFF sí o sí
     const rotacion2DEfectiva: Rotacion2D =
       objective === "OPERATIVO_ESTABLE" ? "OFF" : rotacion2D;
 
@@ -393,7 +389,6 @@ export function PalletClientSimV2({
       bultoSnapshot: bultoSnap ?? undefined,
     };
   };
-
 
   /* =========================
      Handlers
@@ -432,11 +427,8 @@ export function PalletClientSimV2({
           plan: result,
         });
 
-        // ✅ quedate en simulación
         setSavedId(res.palletPlanId);
         onSaved?.(res.palletPlanId);
-
-        // opcional: refrescar data sin navegar
         router.refresh();
       } catch (e) {
         console.error(e);
@@ -566,7 +558,7 @@ export function PalletClientSimV2({
           <div className="grid gap-2">
             {optionCard({
               title: "Operativo / estable (recomendado)",
-              desc: "Consistente para operación diaria. Sin parámetros pro.",
+              desc: "Consistente para operación diaria. Sin parámetros PRO.",
               active: objective === "OPERATIVO_ESTABLE",
               onClick: () => setObjective("OPERATIVO_ESTABLE"),
               badge: objective === "OPERATIVO_ESTABLE" ? "Seleccionado" : "Elegir",
@@ -574,7 +566,7 @@ export function PalletClientSimV2({
 
             {optionCard({
               title: "Operativo parametrizable (PRO)",
-              desc: "Permite límites por bultos/capas, objetivo de ocupación y override apilable.",
+              desc: "Permite simular más bultos, limitar capas máximas y definir objetivo de ocupación.",
               active: objective === "OPERATIVO_PARAMETRIZABLE",
               onClick: () => setObjective("OPERATIVO_PARAMETRIZABLE"),
               badge:
@@ -582,7 +574,7 @@ export function PalletClientSimV2({
             })}
           </div>
 
-          {/* Rotación 2D (feature independiente) */}
+          {/* Rotación 2D */}
           <div className="mt-2 rounded-lg border bg-white p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -608,7 +600,7 @@ export function PalletClientSimV2({
             </div>
           </div>
 
-          {/* Panel PRO (solo si parametrizable) */}
+          {/* Panel PRO */}
           {objective === "OPERATIVO_PARAMETRIZABLE" && (
             <div className="rounded-lg border bg-white p-3 space-y-3">
               <p className="text-sm font-semibold text-slate-800">Parámetros PRO</p>
@@ -616,33 +608,33 @@ export function PalletClientSimV2({
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-600">
-                    Límite de bultos (opcional)
+                    Bultos a simular (opcional)
                   </label>
                   <input
-                    value={proLimiteBultos}
-                    onChange={(e) => setProLimiteBultos(e.target.value)}
+                    value={proBultosSimulados}
+                    onChange={(e) => setProBultosSimulados(e.target.value)}
                     inputMode="numeric"
-                    placeholder="Ej: 40"
+                    placeholder={`Ej: ${Math.max(1, safeNumber(lote.bultos_totales, 0) * 2)}`}
                     className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                   />
                   <p className="text-[11px] text-slate-500">
-                    Se clamp a la disponibilidad real del lote.
+                    Stress test: el motor intenta colocar hasta esa cantidad (puede ser mayor que el lote real).
                   </p>
                 </div>
 
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-600">
-                    Límite de capas (opcional)
+                    Capas máximas (override) (opcional)
                   </label>
                   <input
-                    value={proLimiteCapas}
-                    onChange={(e) => setProLimiteCapas(e.target.value)}
+                    value={proCapasMaxOverride}
+                    onChange={(e) => setProCapasMaxOverride(e.target.value)}
                     inputMode="numeric"
                     placeholder="Ej: 1, 2, 3..."
                     className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                   />
                   <p className="text-[11px] text-slate-500">
-                    Igual se respeta altura/peso máximo del pallet.
+                    Tope de capas permitido. Igual se respetan altura útil y peso máximo.
                   </p>
                 </div>
 
@@ -682,6 +674,8 @@ export function PalletClientSimV2({
             </div>
           )}
         </div>
+
+
 
 
         {/* Configuración (selects + acciones) */}

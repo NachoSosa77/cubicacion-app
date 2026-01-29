@@ -40,7 +40,8 @@ export async function crearSimulacion(input: CrearSimulacionInput) {
               descripcion: descripcion ?? `Lote generado por simulación`,
               status: "BORRADOR",
               packing_policy: "OPERATIVO_AGRUPADO",
-              tipo_bulto: "EMPRESA_BULTO",
+              tipo_bulto: "PRODUCTO_ESTANDAR",
+              bulto_empresa_id: null,
               unidades_totales: 0,
               bultos_totales: 0,
               meta: {
