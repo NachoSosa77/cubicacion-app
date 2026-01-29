@@ -191,7 +191,11 @@ export default async function Page({ params, searchParams }: PageProps) {
   };
 
   // 5) Server actions wrappers: ahora pasan simulacionId además de loteId (si hay)
-  async function onPreviewCamion(form: { transporteId: number }) {
+  async function onPreviewCamion(form: {
+    transporteId: number;
+    modo?: "GUARDADO" | "SIMULACION_CAMION_PCT";
+    cargaPct?: number;
+  }) {
     "use server";
     if (!lote) {
       throw new Error("La simulación no tiene lote asociado.");
@@ -200,6 +204,8 @@ export default async function Page({ params, searchParams }: PageProps) {
       empresaId,
       loteId: lote.id,
       transporteId: form.transporteId,
+      modo: form.modo,
+      cargaPct: form.cargaPct,
     });
   }
 

@@ -32,6 +32,17 @@ export type CamionStrategy = "ESTABLE" | "OPTIMIZAR" | "DESCARGA_RAPIDA";
 type PreviewResponse = {
   recommended_strategy: CamionStrategy;
   plans_by_strategy: Record<CamionStrategy, CamionPlanResult>;
+  simulacion?: {
+    modo: "SIMULACION_CAMION_PCT";
+    cargaPct: number;
+    palletsMaxPorStrategy: Record<CamionStrategy, number>;
+    palletsSimuladosPorStrategy: Record<CamionStrategy, number>;
+    bultosSimuladosPorStrategy: Record<CamionStrategy, number>;
+    productosSimuladosPorStrategy: Record<
+      CamionStrategy,
+      Array<{ tipoProductoId: number; codigo: string; bultos: number }>
+    >;
+  } | null;
 };
 
 type ClientLote = {
@@ -140,7 +151,11 @@ export function CamionClientSimV2({
   lote: ClientLote;
   transportes: Transporte[];
   palletSummary: PalletSummary;
-  onPreview: (params: { transporteId: number }) => Promise<PreviewResponse>;
+  onPreview: (params: {
+    transporteId: number;
+    modo?: "GUARDADO" | "SIMULACION_CAMION_PCT";
+    cargaPct?: number;
+  }) => Promise<PreviewResponse>;
   onGuardar: (params: {
     transporteId: number;
     strategy: CamionStrategy;
@@ -153,6 +168,10 @@ export function CamionClientSimV2({
   const [selected, setSelected] = useState<CamionStrategy>("ESTABLE");
   const [error, setError] = useState<string | null>(null);
   const [mensaje, setMensaje] = useState<string | null>(null);
+  const [modoCarga, setModoCarga] = useState<
+    "GUARDADO" | "SIMULACION_CAMION_PCT"
+  >("GUARDADO");
+  const [cargaPct, setCargaPct] = useState("100");
 
   const [isPending, startTransition] = useTransition();
   const [isSaving, startSave] = useTransition();
@@ -186,9 +205,24 @@ export function CamionClientSimV2({
       return;
     }
 
+    if (modoCarga === "SIMULACION_CAMION_PCT") {
+      const pct = Number(cargaPct);
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+        setError("Indicá un % válido entre 1 y 100 para la simulación.");
+        return;
+      }
+    }
+
     startTransition(async () => {
       try {
-        const res = await onPreview({ transporteId: Number(transporteId) });
+        const res = await onPreview({
+          transporteId: Number(transporteId),
+          modo: modoCarga,
+          cargaPct:
+            modoCarga === "SIMULACION_CAMION_PCT"
+              ? Number(cargaPct)
+              : undefined,
+        });
         setPreview(res);
         setSelected(res.recommended_strategy);
       } catch (e) {
@@ -251,6 +285,54 @@ export function CamionClientSimV2({
             ? pill(`Últ update: ${formatDateTime(palletSummary.lastUpdatedAt)}`)
             : pill("Sin update")}
           {lote.tipoBulto ? pill(`Tipo bulto: ${lote.tipoBulto}`) : null}
+        </div>
+
+        <div className="rounded-lg border bg-white p-3 space-y-2">
+          <p className="text-sm font-semibold text-slate-900">
+            Origen del cálculo
+          </p>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              checked={modoCarga === "GUARDADO"}
+              onChange={() => setModoCarga("GUARDADO")}
+            />
+            <span>
+              <strong>Usar pallets guardados</strong>
+              <span className="block text-xs text-slate-500">
+                Respeta la cubicación guardada en la base.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              checked={modoCarga === "SIMULACION_CAMION_PCT"}
+              onChange={() => setModoCarga("SIMULACION_CAMION_PCT")}
+            />
+            <span>
+              <strong>Simular carga completa (%)</strong>
+              <span className="block text-xs text-slate-500">
+                Calcula capacidad del camión según un % de carga.
+              </span>
+            </span>
+          </label>
+
+          {modoCarga === "SIMULACION_CAMION_PCT" && (
+            <div className="flex items-center gap-2 text-sm">
+              <input
+                type="number"
+                min={1}
+                max={100}
+                className="w-20 border rounded-md px-2 py-1"
+                value={cargaPct}
+                onChange={(e) => setCargaPct(e.target.value)}
+              />
+              <span className="text-xs text-slate-500">
+                % de carga simulada
+              </span>
+            </div>
+          )}
         </div>
 
 
@@ -430,6 +512,67 @@ export function CamionClientSimV2({
 
               return (
                 <div className="mt-4 space-y-4">
+                  {preview.simulacion && (
+                    <div className="rounded-md border bg-slate-50 p-3 text-sm text-slate-700 space-y-2">
+                      <p className="font-semibold">
+                        Simulación de carga: {preview.simulacion.cargaPct}% del
+                        camión
+                      </p>
+                      <div className="grid gap-2 md:grid-cols-3 text-xs">
+                        <div>
+                          <p className="text-slate-500">Pallets simulados</p>
+                          <p className="font-semibold">
+                            {
+                              preview.simulacion.palletsSimuladosPorStrategy[
+                                selected
+                              ]
+                            }{" "}
+                            /{" "}
+                            {
+                              preview.simulacion.palletsMaxPorStrategy[
+                                selected
+                              ]
+                            }
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">Bultos estimados</p>
+                          <p className="font-semibold">
+                            {
+                              preview.simulacion.bultosSimuladosPorStrategy[
+                                selected
+                              ]
+                            }
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">Productos (bultos)</p>
+                          <p className="font-semibold">
+                            {
+                              preview.simulacion.productosSimuladosPorStrategy[
+                                selected
+                              ].length
+                            }
+                          </p>
+                        </div>
+                      </div>
+
+                      {preview.simulacion.productosSimuladosPorStrategy[
+                        selected
+                      ].length > 0 && (
+                        <ul className="text-xs text-slate-600 list-disc pl-4">
+                          {preview.simulacion.productosSimuladosPorStrategy[
+                            selected
+                          ].map((prod) => (
+                            <li key={prod.tipoProductoId}>
+                              {prod.codigo}: {prod.bultos} bultos
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
                   {/* Resumen */}
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>

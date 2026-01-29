@@ -43,12 +43,18 @@ export default async function CamionPage({
     orderBy: { denominacion_de_vehiculo: "asc" },
   });
 
-  async function onPreview(form: { transporteId: number }) {
+  async function onPreview(form: {
+    transporteId: number;
+    modo?: "GUARDADO" | "SIMULACION_CAMION_PCT";
+    cargaPct?: number;
+  }) {
     "use server";
     return previewCamionPlan({
       empresaId,
       loteId: loteIdSafe,
       transporteId: form.transporteId,
+      modo: form.modo,
+      cargaPct: form.cargaPct,
     });
   }
 
