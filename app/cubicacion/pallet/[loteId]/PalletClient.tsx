@@ -106,7 +106,15 @@ type ClientLote = {
 };
 
 type MixPolicy = "NO_MEZCLAR" | "PERMITIR_MEZCLA";
-type Objective = "OPERATIVO_ESTABLE" | "OPTIMIZAR_VOLUMEN" | "CUIDADO_PRODUCTO";
+type Objective = "OPERATIVO_ESTABLE" | "OPERATIVO_PARAMETRIZABLE";
+type Rotacion2D = "ON" | "OFF";
+
+type PalletParametros = {
+  bultosSimulados?: number | null;
+  capasMaxOverride?: number | null;
+  objetivoOcupacion01?: number | null;
+  apilableOverride?: boolean | null;
+} | null;
 
 interface Props {
   empresaId: number;
@@ -158,9 +166,14 @@ export function PalletClient({ empresaId, lote, contenedores }: Props) {
   const [tipoContenedorId, setTipoContenedorId] = useState<number | "">("");
   const [mixPolicy, setMixPolicy] = useState<MixPolicy>("PERMITIR_MEZCLA");
   const [objective, setObjective] = useState<Objective>("OPERATIVO_ESTABLE");
-  const [modoSimulacion, setModoSimulacion] = useState<boolean>(false);
-  const [objetivoUnidades, setObjetivoUnidades] = useState<string>("");
-  const [objetivoOcupacion, setObjetivoOcupacion] = useState<string>("");
+  const [rotacion2D, setRotacion2D] = useState<Rotacion2D>("OFF");
+
+  const [proBultosSimulados, setProBultosSimulados] = useState<string>("");
+  const [proCapasMaxOverride, setProCapasMaxOverride] = useState<string>("");
+  const [proObjetivoOcupacion, setProObjetivoOcupacion] = useState<string>("");
+  const [proApilableOverride, setProApilableOverride] = useState<
+    "AUTO" | "NO_APILABLE"
+  >("AUTO");
 
   const [result, setResult] = useState<PalletPlanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -226,9 +239,13 @@ export function PalletClient({ empresaId, lote, contenedores }: Props) {
     });
   }, [lote.items, lote.tipo_bulto]);
 
+  const parametrizable = objective === "OPERATIVO_PARAMETRIZABLE";
   const simulacionActiva =
-    modoSimulacion &&
-    (objetivoUnidades.trim() !== "" || objetivoOcupacion.trim() !== "");
+    parametrizable &&
+    (proBultosSimulados.trim() !== "" ||
+      proCapasMaxOverride.trim() !== "" ||
+      proObjetivoOcupacion.trim() !== "" ||
+      proApilableOverride === "NO_APILABLE");
 
   /* =========================
      Validación común
@@ -256,29 +273,56 @@ export function PalletClient({ empresaId, lote, contenedores }: Props) {
       return null;
     }
 
-    const objetivoUnidadesNum = objetivoUnidades.trim()
-      ? Number(objetivoUnidades)
-      : undefined;
+    const proBultosSimuladosNum = proBultosSimulados.trim()
+      ? Number(proBultosSimulados)
+      : null;
     if (
-      objetivoUnidadesNum !== undefined &&
-      !Number.isFinite(objetivoUnidadesNum)
+      proBultosSimuladosNum !== null &&
+      !Number.isFinite(proBultosSimuladosNum)
     ) {
-      setError("Indicá un número válido en bultos deseados.");
+      setError("Indicá un número válido en bultos simulados.");
       return null;
     }
 
-    const objetivoOcupacionPct = objetivoOcupacion.trim()
-      ? Number(objetivoOcupacion)
-      : undefined;
+    const proCapasMaxNum = proCapasMaxOverride.trim()
+      ? Number(proCapasMaxOverride)
+      : null;
+    if (proCapasMaxNum !== null && !Number.isFinite(proCapasMaxNum)) {
+      setError("Indicá un número válido en capas máximas.");
+      return null;
+    }
+
+    const proObjetivoOcupacionPct = proObjetivoOcupacion.trim()
+      ? Number(proObjetivoOcupacion)
+      : null;
     if (
-      objetivoOcupacionPct !== undefined &&
-      (!Number.isFinite(objetivoOcupacionPct) ||
-        objetivoOcupacionPct < 0 ||
-        objetivoOcupacionPct > 100)
+      proObjetivoOcupacionPct !== null &&
+      (!Number.isFinite(proObjetivoOcupacionPct) ||
+        proObjetivoOcupacionPct < 0 ||
+        proObjetivoOcupacionPct > 100)
     ) {
       setError("El % de ocupación deseada debe estar entre 0 y 100.");
       return null;
     }
+
+    const parametros: PalletParametros = parametrizable
+      ? {
+          bultosSimulados:
+            proBultosSimuladosNum != null && proBultosSimuladosNum > 0
+              ? proBultosSimuladosNum
+              : null,
+          capasMaxOverride:
+            proCapasMaxNum != null && proCapasMaxNum > 0
+              ? Math.floor(proCapasMaxNum)
+              : null,
+          objetivoOcupacion01:
+            proObjetivoOcupacionPct != null
+              ? proObjetivoOcupacionPct / 100
+              : null,
+          apilableOverride:
+            proApilableOverride === "NO_APILABLE" ? false : null,
+        }
+      : null;
 
     return {
       empresaId,
@@ -286,15 +330,8 @@ export function PalletClient({ empresaId, lote, contenedores }: Props) {
       tipoContenedorId: Number(tipoContenedorId),
       mixPolicy,
       objective,
-      modoSimulacion,
-      objetivoUnidades:
-        modoSimulacion && objetivoUnidadesNum && objetivoUnidadesNum > 0
-          ? objetivoUnidadesNum
-          : undefined,
-      objetivoOcupacion:
-        modoSimulacion && objetivoOcupacionPct !== undefined
-          ? objetivoOcupacionPct / 100
-          : undefined,
+      rotacion2D,
+      parametros,
     };
   };
 
@@ -526,72 +563,92 @@ export function PalletClient({ empresaId, lote, contenedores }: Props) {
             onChange={(e) => setObjective(e.target.value as Objective)}
           >
             <option value="OPERATIVO_ESTABLE">Operativo / estable</option>
-            <option value="OPTIMIZAR_VOLUMEN">Optimizar volumen</option>
-            <option value="CUIDADO_PRODUCTO">Cuidado del producto</option>
+            <option value="OPERATIVO_PARAMETRIZABLE">
+              Operativo parametrizable
+            </option>
           </select>
+          <p className="text-xs text-slate-500">
+            El modo parametrizable permite forzar simulaciones sin perder las
+            reglas de medidas, peso, volumen y apilado.
+          </p>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">
-            Modo simulación
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              id="modo-simulacion"
-              type="checkbox"
-              className="h-4 w-4"
-              checked={modoSimulacion}
-              onChange={(e) => setModoSimulacion(e.target.checked)}
-            />
-            <label htmlFor="modo-simulacion" className="text-sm text-slate-700">
-              Limitar por objetivo sin perder el cálculo máximo por defecto.
+      {objective === "OPERATIVO_PARAMETRIZABLE" && (
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">
+              Bultos simulados (stress test)
             </label>
+            <input
+              type="number"
+              min={0}
+              className="w-full border rounded-md px-3 py-2 text-sm"
+              placeholder="Ej: 80"
+              value={proBultosSimulados}
+              onChange={(e) => setProBultosSimulados(e.target.value)}
+            />
+            <p className="text-xs text-slate-500">
+              Permite simular más bultos que el lote real.
+            </p>
           </div>
-          <p className="text-xs text-slate-500">
-            Activá esta opción para simular un pallet parcial.
-          </p>
-        </div>
 
-        <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">
-            Bultos deseados (objetivo)
-          </label>
-          <input
-            type="number"
-            min={0}
-            className="w-full border rounded-md px-3 py-2 text-sm"
-            placeholder="Ej: 40"
-            value={objetivoUnidades}
-            onChange={(e) => setObjetivoUnidades(e.target.value)}
-            disabled={!modoSimulacion}
-          />
-          <p className="text-xs text-slate-500">
-            Detiene la colocación cuando se alcanza este número de bultos.
-          </p>
-        </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">
+              Capas máximas (override)
+            </label>
+            <input
+              type="number"
+              min={1}
+              className="w-full border rounded-md px-3 py-2 text-sm"
+              placeholder="Ej: 6"
+              value={proCapasMaxOverride}
+              onChange={(e) => setProCapasMaxOverride(e.target.value)}
+            />
+            <p className="text-xs text-slate-500">
+              Limita capas además de altura/peso.
+            </p>
+          </div>
 
-        <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">
-            % ocupación deseada (0-100)
-          </label>
-          <input
-            type="number"
-            min={0}
-            max={100}
-            step={1}
-            className="w-full border rounded-md px-3 py-2 text-sm"
-            placeholder="Ej: 80"
-            value={objetivoOcupacion}
-            onChange={(e) => setObjetivoOcupacion(e.target.value)}
-            disabled={!modoSimulacion}
-          />
-          <p className="text-xs text-slate-500">
-            Se calcula sobre el volumen completo del pallet.
-          </p>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">
+              % ocupación deseada (0-100)
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              className="w-full border rounded-md px-3 py-2 text-sm"
+              placeholder="Ej: 80"
+              value={proObjetivoOcupacion}
+              onChange={(e) => setProObjetivoOcupacion(e.target.value)}
+            />
+            <p className="text-xs text-slate-500">
+              Se calcula sobre el volumen completo del pallet.
+            </p>
+          </div>
+
+          <div className="space-y-1 md:col-span-3">
+            <label className="text-sm font-medium text-slate-700">
+              Regla de apilable
+            </label>
+            <select
+              className="w-full border rounded-md px-3 py-2 text-sm"
+              value={proApilableOverride}
+              onChange={(e) =>
+                setProApilableOverride(e.target.value as "AUTO" | "NO_APILABLE")
+              }
+            >
+              <option value="AUTO">Auto (respeta catálogo)</option>
+              <option value="NO_APILABLE">Forzar NO apilable</option>
+            </select>
+            <p className="text-xs text-slate-500">
+              Forzá una sola capa manteniendo medidas, peso y volumen.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Acciones */}
       <div className="flex flex-wrap items-center justify-end gap-2">

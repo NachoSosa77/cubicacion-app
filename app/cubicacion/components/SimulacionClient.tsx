@@ -122,6 +122,17 @@ type CamionPlanResult = {
 type CamionPreviewResponse = {
   recommended_strategy: CamionStrategy;
   plans_by_strategy: Record<CamionStrategy, CamionPlanResult>;
+  simulacion?: {
+    modo: "SIMULACION_CAMION_PCT";
+    cargaPct: number;
+    palletsMaxPorStrategy: Record<CamionStrategy, number>;
+    palletsSimuladosPorStrategy: Record<CamionStrategy, number>;
+    bultosSimuladosPorStrategy: Record<CamionStrategy, number>;
+    productosSimuladosPorStrategy: Record<
+      CamionStrategy,
+      Array<{ tipoProductoId: number; codigo: string; bultos: number }>
+    >;
+  } | null;
 };
 
 function pill(text: string) {
@@ -130,6 +141,17 @@ function pill(text: string) {
       {text}
     </span>
   );
+}
+
+function parseDimMm(value: any): DimMm | null {
+  if (!value) return null;
+  const largo = Number(value.largo ?? value.largo_mm ?? value.l);
+  const ancho = Number(value.ancho ?? value.ancho_mm ?? value.a);
+  const alto = Number(value.alto ?? value.alto_mm ?? value.h);
+  if (!Number.isFinite(largo) || !Number.isFinite(ancho) || !Number.isFinite(alto))
+    return null;
+  if (largo <= 0 || ancho <= 0 || alto <= 0) return null;
+  return { largo, ancho, alto };
 }
 
 /* =========================
@@ -203,7 +225,11 @@ export function SimulacionClient({
     peso_unidad_kg?: number | null;
   }) => Promise<void>;
 
-  onPreviewCamion: (params: { transporteId: number }) => Promise<CamionPreviewResponse>;
+  onPreviewCamion: (params: {
+    transporteId: number;
+    modo?: "GUARDADO" | "SIMULACION_CAMION_PCT";
+    cargaPct?: number;
+  }) => Promise<CamionPreviewResponse>;
 
   onGuardarCamion: (params: {
     transporteId: number;
@@ -217,6 +243,7 @@ export function SimulacionClient({
 
   // === Workflow state
   const [bultoSnap, setBultoSnap] = useState<BultoSimSnapshot | null>(null);
+  const [modoGranel, setModoGranel] = useState(false);
   const [step, setStep] = useState<0 | 1 | 2 | 3>(0);
   const appliedRef = useRef(false);
   const [palletPlanId, setPalletPlanId] = useState<number | null>(null);
@@ -230,7 +257,7 @@ export function SimulacionClient({
   const hasProductos =
     (productosPlan?.length ?? 0) > 0 || (lote?.items?.length ?? 0) > 0;
 
-  const hasBulto = !!bultoSnap;
+  const hasBulto = !!bultoSnap || modoGranel;
   const hasPallet = palletPlanId != null;
 
   // Pallet y camión (por ahora) requieren lote existente
@@ -241,22 +268,72 @@ export function SimulacionClient({
   const canGoPallet = palletEnabled;
   const canGoCamion = camionEnabled;
 
+  const granelSnap = useMemo((): BultoSimSnapshot | null => {
+    if (!lote) return null;
+
+    const warnings: string[] = [];
+    const items = lote.items.map((it) => {
+      const unidades = Math.max(0, Number(it.cantidad_unidades ?? 0));
+      const dimUnidad = parseDimMm(it.dim_unidad_mm);
+
+      if (!dimUnidad) {
+        warnings.push(
+          `${it.tipo_producto.codigo}: faltan dimensiones de unidad para modo granel.`,
+        );
+      }
+
+      return {
+        tipo_producto_id: it.tipo_producto_id,
+        codigo: it.tipo_producto.codigo,
+        unidades_planificadas: unidades,
+        unidades_por_bulto: 1,
+        cantidad_bultos: unidades,
+        sobrante_unidades: 0,
+        dim_bulto_mm: dimUnidad ?? null,
+        audit: {
+          sourceUnPorBulto: "SNAPSHOT",
+          sourceDims: dimUnidad ? "SNAPSHOT" : "FALLBACK",
+        },
+      };
+    });
+
+    const unidadesTotales = items.reduce(
+      (acc, item) => acc + item.unidades_planificadas,
+      0,
+    );
+
+    return {
+      candidateKey: "A",
+      titulo: "Modo granel (1 unidad por bulto)",
+      scope: "SKU",
+      items,
+      warnings,
+      totales: {
+        unidades: unidadesTotales,
+        bultos: unidadesTotales,
+        bultosParciales: 0,
+      },
+    };
+  }, [lote]);
+
+  const bultoSnapEffective = modoGranel ? granelSnap : bultoSnap;
+
   const loteForPallet = useMemo(() => {
     if (!lote) return null;
-    if (!bultoSnap) return lote;
+    if (!bultoSnapEffective) return lote;
 
     const itemsByTipoProductoId = new Map(
-      bultoSnap.items.map((x) => [x.tipo_producto_id, x])
+      bultoSnapEffective.items.map((x) => [x.tipo_producto_id, x]),
     );
 
     return {
       ...lote,
       __simulacion: {
-        candidateKey: bultoSnap.candidateKey,
-        titulo: bultoSnap.titulo,
+        candidateKey: bultoSnapEffective.candidateKey,
+        titulo: bultoSnapEffective.titulo,
       },
-      unidades_totales: bultoSnap.totales.unidades,
-      bultos_totales: bultoSnap.totales.bultos,
+      unidades_totales: bultoSnapEffective.totales.unidades,
+      bultos_totales: bultoSnapEffective.totales.bultos,
       items: lote.items.map((it) => {
         const sim = itemsByTipoProductoId.get(it.tipo_producto_id);
         if (!sim) return it;
@@ -270,7 +347,7 @@ export function SimulacionClient({
         };
       }),
     };
-  }, [lote, bultoSnap]);
+  }, [lote, bultoSnapEffective]);
 
    useEffect(() => {
     if (appliedRef.current) return;
@@ -777,9 +854,41 @@ export function SimulacionClient({
                   />
                 )}
 
-                {bultoSnap && (
+                {bultoSnapEffective && (
                   <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
-                    Aplicado: <span className="font-semibold">{bultoSnap.titulo}</span>
+                    Aplicado:{" "}
+                    <span className="font-semibold">
+                      {bultoSnapEffective.titulo}
+                    </span>
+                  </div>
+                )}
+
+                {lote && (
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={modoGranel}
+                          onChange={(e) => setModoGranel(e.target.checked)}
+                        />
+                        <span>
+                          <strong>Modo granel</strong>
+                          <span className="block text-[11px] text-slate-500">
+                            Salta la mezcla de bultos y usa 1 unidad por bulto.
+                          </span>
+                        </span>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => setStep(2)}
+                        disabled={!modoGranel}
+                        className="px-3 py-1.5 rounded-md border text-[11px] text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Ir a pallet con granel
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -806,11 +915,35 @@ export function SimulacionClient({
                   </div>
                 ) : (
                   <>
+                    <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                      <label className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={modoGranel}
+                          onChange={(e) => setModoGranel(e.target.checked)}
+                        />
+                        <span>
+                          <strong>Modo granel</strong>
+                          <span className="block text-xs text-slate-500">
+                            Simula el lote como 1 unidad por bulto (usa las
+                            dimensiones de unidad).
+                          </span>
+                        </span>
+                      </label>
+
+                      {modoGranel && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          El cálculo respeta peso y volumen usando el volumen
+                          unitario registrado.
+                        </p>
+                      )}
+                    </div>
+
                     <PalletClientV2
                       empresaId={empresaId}
                       lote={loteForPallet as any}
                       contenedores={contenedores as any}
-                      bultoSnap={bultoSnap}
+                      bultoSnap={bultoSnapEffective}
                       onSaved={(id: number) => {
                         setPalletPlanId(id);
                         setStep(3);

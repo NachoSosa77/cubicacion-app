@@ -28,6 +28,7 @@ type ItemState = {
   largoUnidadMm: string;
   anchoUnidadMm: string;
   altoUnidadMm: string;
+  mixPct: string;
 };
 
 interface Props {
@@ -187,6 +188,7 @@ export function MultiProductoConfigurator({
       largoUnidadMm: "",
       anchoUnidadMm: "",
       altoUnidadMm: "",
+      mixPct: "",
     },
   ]);
 
@@ -212,6 +214,13 @@ export function MultiProductoConfigurator({
 
   const [packingPolicy, setPackingPolicy] =
     useState<PackingPolicy>("OPERATIVO_AGRUPADO");
+  const [permitirMezcla, setPermitirMezcla] = useState(true);
+  const [usarMixPct, setUsarMixPct] = useState(false);
+  const [totalMixUnits, setTotalMixUnits] = useState("");
+
+  const packingPolicyEfectiva: PackingPolicy = permitirMezcla
+    ? packingPolicy
+    : "OPERATIVO_AGRUPADO";
 
   /* ============================
      UI handlers
@@ -227,6 +236,7 @@ export function MultiProductoConfigurator({
         largoUnidadMm: "",
         anchoUnidadMm: "",
         altoUnidadMm: "",
+        mixPct: "",
       },
     ]);
   };
@@ -242,6 +252,19 @@ export function MultiProductoConfigurator({
       prev.map((it) => (it.key === key ? { ...it, [campo]: valor } : it))
     );
   };
+
+  useEffect(() => {
+    if (!usarMixPct || totalMixUnits.trim() !== "") return;
+
+    const sum = items.reduce((acc, item) => {
+      const qty = numberOrNull(item.cantidadUnidades);
+      return acc + (qty ?? 0);
+    }, 0);
+
+    if (sum > 0) {
+      setTotalMixUnits(String(sum));
+    }
+  }, [items, totalMixUnits, usarMixPct]);
 
   const seleccionarProducto = (key: string, productoId: number | "") => {
     setItems((prev) =>
@@ -273,12 +296,30 @@ export function MultiProductoConfigurator({
     [items]
   );
 
+  const totalMixUnitsNum = numberOrNull(totalMixUnits);
+
+  const resolveCantidadUnidades = (item: ItemState): number | null => {
+    if (!usarMixPct) {
+      return numberOrNull(item.cantidadUnidades);
+    }
+
+    const pct = numberOrNull(item.mixPct);
+    if (!totalMixUnitsNum || !pct || pct <= 0) return null;
+
+    return Math.max(0, Math.round((totalMixUnitsNum * pct) / 100));
+  };
+
+  const totalPct = useMemo(() => {
+    if (!usarMixPct) return null;
+    return items.reduce((acc, item) => acc + (numberOrNull(item.mixPct) ?? 0), 0);
+  }, [items, usarMixPct]);
+
   const itemsMultiReal = useMemo((): MultiProductoUnidadInputReal[] => {
     return items
       .map((item): MultiProductoUnidadInputReal | null => {
         const producto = productos.find((p) => p.id === item.productoId);
 
-        const cantidad = numberOrNull(item.cantidadUnidades);
+        const cantidad = resolveCantidadUnidades(item);
 
         const largo = Number(item.largoUnidadMm);
         const ancho = Number(item.anchoUnidadMm);
@@ -340,7 +381,7 @@ export function MultiProductoConfigurator({
         };
       })
       .filter(isNotNull);
-  }, [items, productos]);
+  }, [items, productos, totalMixUnitsNum, usarMixPct]);
 
   const isMultiProducto = itemsMultiReal.length >= 2;
 
@@ -356,7 +397,7 @@ export function MultiProductoConfigurator({
     console.log("DBG UI:", {
       itemsMultiRealLen: itemsMultiReal.length,
       hayBultosEmpresaHabilitados,
-      packingPolicy,
+      packingPolicy: packingPolicyEfectiva,
       bultosEmpresaLen: bultosEmpresa.length,
       bultosEmpresaHabilitados: bultosEmpresa.map((b) => ({
         codigo: b.codigo,
@@ -373,7 +414,7 @@ export function MultiProductoConfigurator({
   }, [
     itemsMultiReal,
     hayBultosEmpresaHabilitados,
-    packingPolicy,
+    packingPolicyEfectiva,
     bultosEmpresa,
   ]);
   /* ============================
@@ -412,7 +453,7 @@ export function MultiProductoConfigurator({
     const res = evaluarBultosEmpresa(
       itemsMultiReal,
       bultosEmpresa,
-      packingPolicy,
+      packingPolicyEfectiva,
       modoPacking
     );
 
@@ -420,8 +461,10 @@ export function MultiProductoConfigurator({
   }, [
     itemsMultiReal,
     bultosEmpresa,
-    packingPolicy,
+    packingPolicyEfectiva,
     hayBultosEmpresaHabilitados,
+    modoSimulacion,
+    simMode,
   ]);
 
   const topBultosEmpresa = useMemo(() => {
@@ -706,7 +749,7 @@ export function MultiProductoConfigurator({
           Number.isFinite(bultoId) && bultoId > 0 ? bultoId : undefined,
         titulo: `Bulto empresa · ${codigoB}`,
         subtitulo: `${isMultiProducto ? "Multi-producto" : "1 producto"} · ${
-          PACKING_POLICY_LABELS[packingPolicy].titulo
+          PACKING_POLICY_LABELS[packingPolicyEfectiva].titulo
         }${previewParcial ? " · Preview parcial" : ""}`,
         ocupacionPct,
         unidadesTotales: p3d?.unidadesTotales ?? unidadesTotalesAll,
@@ -749,7 +792,7 @@ export function MultiProductoConfigurator({
   // ✅ UX: al cambiar policy, reseteo selección (evita “resucitar” opciones)
   useEffect(() => {
     setOpcionSeleccionada(null);
-  }, [packingPolicy]);
+  }, [packingPolicyEfectiva]);
 
   // Ajuste de índice si cambian opciones
   useEffect(() => {
@@ -773,6 +816,12 @@ export function MultiProductoConfigurator({
       setPackingPolicy("OPERATIVO_AGRUPADO");
     }
   }, [selectedIsStd, packingPolicy]);
+
+  useEffect(() => {
+    if (!permitirMezcla && packingPolicy !== "OPERATIVO_AGRUPADO") {
+      setPackingPolicy("OPERATIVO_AGRUPADO");
+    }
+  }, [permitirMezcla, packingPolicy]);
 
   const preview3DData = useMemo((): CubicacionBulto3DInput | null => {
     if (opcionSeleccionada === null) return null;
@@ -875,10 +924,32 @@ export function MultiProductoConfigurator({
 
     const mensajes: string[] = [];
 
+    if (usarMixPct) {
+      if (!totalMixUnitsNum || totalMixUnitsNum <= 0) {
+        mensajes.push(
+          "Definí las unidades totales para distribuir cuando usás % de mix."
+        );
+      }
+
+      if (totalPct !== 100) {
+        mensajes.push("El total de porcentaje por producto debe sumar 100%.");
+      }
+    }
+
     items.forEach((item, idx) => {
       if (item.productoId === "")
         mensajes.push(`Fila ${idx + 1}: seleccioná un producto.`);
-      if (!item.cantidadUnidades || Number(item.cantidadUnidades) <= 0) {
+      if (usarMixPct) {
+        const pct = numberOrNull(item.mixPct);
+        if (!pct || pct <= 0) {
+          mensajes.push(
+            `Fila ${idx + 1}: indicá un % de mix mayor a 0 para el producto.`
+          );
+        }
+      }
+
+      const cantidadCalculada = resolveCantidadUnidades(item);
+      if (!cantidadCalculada || cantidadCalculada <= 0) {
         mensajes.push(
           `Fila ${idx + 1}: indicá cantidad de unidades (número positivo).`
         );
@@ -1005,7 +1076,7 @@ export function MultiProductoConfigurator({
           descripcion: descripcion.trim() || null,
 
           packingPolicy: selectedIsEmpresa
-            ? packingPolicy
+            ? packingPolicyEfectiva
             : "OPERATIVO_AGRUPADO",
           tipoBulto: selectedOpt.kind,
           bultoEmpresaId:
@@ -1132,6 +1203,53 @@ export function MultiProductoConfigurator({
       )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
+        <div className="rounded-md border bg-white p-3 space-y-2">
+          <p className="text-sm font-semibold text-slate-900">
+            Distribución por porcentaje
+          </p>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={usarMixPct}
+              onChange={(e) => setUsarMixPct(e.target.checked)}
+            />
+            <span>
+              <strong>Definir mix por %</strong>
+              <span className="block text-xs text-slate-500">
+                Calcula automáticamente las unidades por producto según el
+                porcentaje.
+              </span>
+            </span>
+          </label>
+
+          {usarMixPct && (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <label className="flex items-center gap-2">
+                <span className="text-slate-600">Unidades totales</span>
+                <input
+                  type="number"
+                  min={1}
+                  className="w-28 border rounded-md px-2 py-1"
+                  value={totalMixUnits}
+                  onChange={(e) => setTotalMixUnits(e.target.value)}
+                  placeholder="Ej: 500"
+                />
+              </label>
+
+              <span
+                className={[
+                  "text-xs",
+                  totalPct === 100 ? "text-emerald-600" : "text-amber-600",
+                ].join(" ")}
+              >
+                Total %: {totalPct ?? 0}
+                {totalPct === 100 ? " (OK)" : " (debe ser 100)"}
+              </span>
+            </div>
+          )}
+        </div>
+
         {/* Tabla */}
         <div className="overflow-auto border rounded-md">
           <table className="min-w-full text-sm">
@@ -1139,6 +1257,7 @@ export function MultiProductoConfigurator({
               <tr>
                 <th className="px-3 py-2">Producto</th>
                 <th className="px-3 py-2">Cant. unidades</th>
+                {usarMixPct && <th className="px-3 py-2">% mix</th>}
                 <th className="px-3 py-2">Largo (mm)</th>
                 <th className="px-3 py-2">Ancho (mm)</th>
                 <th className="px-3 py-2">Alto (mm)</th>
@@ -1147,7 +1266,9 @@ export function MultiProductoConfigurator({
             </thead>
 
             <tbody>
-              {items.map((item) => (
+              {items.map((item) => {
+                const cantidadCalculada = resolveCantidadUnidades(item);
+                return (
                 <tr key={item.key} className="border-t align-top">
                   <td className="px-3 py-2 min-w-70">
                     <select
@@ -1175,7 +1296,11 @@ export function MultiProductoConfigurator({
                       type="number"
                       min={1}
                       className="w-28 border rounded-md px-2 py-1"
-                      value={item.cantidadUnidades}
+                      value={
+                        usarMixPct
+                          ? String(cantidadCalculada ?? "")
+                          : item.cantidadUnidades
+                      }
                       onChange={(e) =>
                         actualizarItem(
                           item.key,
@@ -1184,8 +1309,31 @@ export function MultiProductoConfigurator({
                         )
                       }
                       placeholder="Ej: 20"
+                      disabled={usarMixPct}
                     />
+                    {usarMixPct && (
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Calculado por %
+                      </p>
+                    )}
                   </td>
+
+                  {usarMixPct && (
+                    <td className="px-3 py-2">
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        className="w-20 border rounded-md px-2 py-1"
+                        value={item.mixPct}
+                        onChange={(e) =>
+                          actualizarItem(item.key, "mixPct", e.target.value)
+                        }
+                        placeholder="0"
+                      />
+                    </td>
+                  )}
 
                   <td className="px-3 py-2">
                     <input
@@ -1248,7 +1396,7 @@ export function MultiProductoConfigurator({
                     )}
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
@@ -1270,42 +1418,73 @@ export function MultiProductoConfigurator({
           </div>
         </div>
 
-        {/* ✅ Policy primero (valor agregado) */}
-        {mostrarPolicy && (
-          <div className="rounded-md border bg-white p-3 space-y-2">
-            <p className="text-sm font-semibold text-slate-900">
-              Estrategia de llenado del bulto (packing policy)
-            </p>
+      {/* Mezcla dentro del bulto */}
+      {itemsMultiReal.length > 0 && (
+        <div className="rounded-md border bg-white p-3 space-y-2">
+          <p className="text-sm font-semibold text-slate-900">
+            Mezcla de productos en un mismo bulto
+          </p>
 
-            {(
-              [
-                "OPERATIVO_AGRUPADO",
-                "OPTIMIZAR_VOLUMEN",
-                "BUSCAR_MEJOR_ACOMODO",
-              ] as PackingPolicy[]
-            ).map((policy) => (
-              <label key={policy} className="flex items-start gap-2 text-sm">
-                <input
-                  type="radio"
-                  checked={packingPolicy === policy}
-                  onChange={() => setPackingPolicy(policy)}
-                />
-                <span>
-                  <strong>{PACKING_POLICY_LABELS[policy].titulo}</strong>
-                  <br />
-                  <span className="text-xs text-slate-500">
-                    {PACKING_POLICY_LABELS[policy].descripcion}
-                  </span>
-                </span>
-              </label>
-            ))}
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={permitirMezcla}
+              onChange={(e) => setPermitirMezcla(e.target.checked)}
+            />
+            <span>
+              <strong>Permitir mezcla</strong>
+              <span className="block text-xs text-slate-500">
+                Activa la combinación de productos dentro del mismo bulto.
+              </span>
+            </span>
+          </label>
 
+          {!permitirMezcla && (
             <p className="text-[11px] text-slate-500">
-              Esta selección define el ranking de bultos empresa y el layout del
-              primer bulto (preview fiel).
+              Mezcla desactivada: se fuerza una estrategia operativa agrupada
+              (1 producto por bulto).
             </p>
-          </div>
-        )}
+          )}
+        </div>
+      )}
+
+      {/* ✅ Policy primero (valor agregado) */}
+      {mostrarPolicy && (
+        <div className="rounded-md border bg-white p-3 space-y-2">
+          <p className="text-sm font-semibold text-slate-900">
+            Estrategia de llenado del bulto (packing policy)
+          </p>
+
+          {(
+            [
+              "OPERATIVO_AGRUPADO",
+              "OPTIMIZAR_VOLUMEN",
+              "BUSCAR_MEJOR_ACOMODO",
+            ] as PackingPolicy[]
+          ).map((policy) => (
+            <label key={policy} className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                checked={packingPolicy === policy}
+                disabled={!permitirMezcla}
+                onChange={() => setPackingPolicy(policy)}
+              />
+              <span>
+                <strong>{PACKING_POLICY_LABELS[policy].titulo}</strong>
+                <br />
+                <span className="text-xs text-slate-500">
+                  {PACKING_POLICY_LABELS[policy].descripcion}
+                </span>
+              </span>
+            </label>
+          ))}
+
+          <p className="text-[11px] text-slate-500">
+            Esta selección define el ranking de bultos empresa y el layout del
+            primer bulto (preview fiel).
+          </p>
+        </div>
+      )}
 
         {/* Opciones */}
         {opciones.length > 0 && (
@@ -1534,14 +1713,14 @@ export function MultiProductoConfigurator({
             )}
 
             <CubicacionBultoViewer3D
-              key={`${selectedOpt?.key ?? "none"}-${packingPolicy}-${
+              key={`${selectedOpt?.key ?? "none"}-${packingPolicyEfectiva}-${
                 opcionSeleccionada ?? "n"
               }`}
               data={preview3DData}
             />
 
             <p className="text-xs text-slate-500">
-              Policy: <strong>{packingPolicy}</strong> · Placements:{" "}
+              Policy: <strong>{packingPolicyEfectiva}</strong> · Placements:{" "}
               <strong>{preview3DData.contenido.length}</strong>
             </p>
 

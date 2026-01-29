@@ -71,8 +71,12 @@ export async function previewCamionPlan(params: {
   empresaId: number;
   loteId: number;
   transporteId: number;
+  modo?: "GUARDADO" | "SIMULACION_CAMION_PCT";
+  cargaPct?: number;
 }) {
   const { loteId, transporteId } = params;
+  const modo = params.modo ?? "GUARDADO";
+  const cargaPct = params.cargaPct ?? 100;
 
   // 1) Transporte
   const transporte = await prisma.transporteClasificacion.findUnique({
@@ -121,6 +125,55 @@ export async function previewCamionPlan(params: {
     };
   });
 
+  const basePalletPlan = palletPlans[0];
+  const basePalletDimMm = extractPalletDimMm(basePalletPlan.layout);
+  const basePalletTemplate = {
+    palletPlanId: basePalletPlan.id,
+    dimPalletMm: basePalletDimMm,
+    alturaUtilizadaMm: toNumber(basePalletPlan.altura_utilizada_mm, 0),
+    pesoTotalKg: toNumber(basePalletPlan.peso_total_kg, 0),
+  };
+
+  const extractPalletResumen = (layout: Prisma.JsonValue) => {
+    const obj = layout as any;
+    const pallet1 = obj?.pallet1 ?? {};
+
+    const cajasTotales = toNumber(
+      pallet1?.cajasTotales ?? pallet1?.unidadesColocadas ?? 0,
+      0,
+    );
+    const placements = Array.isArray(pallet1?.placements)
+      ? pallet1.placements
+      : [];
+
+    const conteo = new Map<number, { codigo: string; bultos: number }>();
+    for (const pl of placements) {
+      const id = toNumber(pl?.tipoProductoId, 0);
+      if (!id) continue;
+      const codigo = String(pl?.codigo ?? `PROD-${id}`).trim() || `PROD-${id}`;
+      const current = conteo.get(id) ?? { codigo, bultos: 0 };
+      current.bultos += 1;
+      conteo.set(id, current);
+    }
+
+    const productos = Array.from(conteo.entries()).map(([id, data]) => ({
+      tipoProductoId: id,
+      codigo: data.codigo,
+      bultos: data.bultos,
+    }));
+
+    const bultosPorPallet =
+      cajasTotales > 0
+        ? cajasTotales
+        : placements.length > 0
+          ? placements.length
+          : 0;
+
+    return { bultosPorPallet, productos };
+  };
+
+  const resumenPalletBase = extractPalletResumen(basePalletPlan.layout);
+
   // 3) Base input para el algoritmo
   const baseInput = {
     transporte: {
@@ -136,14 +189,69 @@ export async function previewCamionPlan(params: {
     pallets: palletsInput,
   };
 
-  const mk = (strategy: CamionStrategy) =>
-    calcularCamionPlan(baseInput, strategy, {
+  const mk = (strategy: CamionStrategy, pallets: typeof palletsInput) =>
+    calcularCamionPlan({ ...baseInput, pallets }, strategy, {
       clearanceMm: 40,
       puertaEnX: "TRASERA",
     });
 
+  const buildPallets = (count: number) =>
+    Array.from({ length: count }, () => ({ ...basePalletTemplate }));
+
+  const palletsMaxPorStrategy: Record<CamionStrategy, number> = {
+    ESTABLE: 0,
+    OPTIMIZAR: 0,
+    DESCARGA_RAPIDA: 0,
+  };
+  const palletsSimuladosPorStrategy: Record<CamionStrategy, number> = {
+    ESTABLE: 0,
+    OPTIMIZAR: 0,
+    DESCARGA_RAPIDA: 0,
+  };
+  const bultosSimuladosPorStrategy: Record<CamionStrategy, number> = {
+    ESTABLE: 0,
+    OPTIMIZAR: 0,
+    DESCARGA_RAPIDA: 0,
+  };
+  const productosSimuladosPorStrategy: Record<
+    CamionStrategy,
+    Array<{ tipoProductoId: number; codigo: string; bultos: number }>
+  > = {
+    ESTABLE: [],
+    OPTIMIZAR: [],
+    DESCARGA_RAPIDA: [],
+  };
+
   const plans_by_strategy = Object.fromEntries(
-    STRATEGIES.map((s) => [s, mk(s)]),
+    STRATEGIES.map((s) => {
+      if (modo === "SIMULACION_CAMION_PCT") {
+        const probePlan = mk(s, buildPallets(400));
+        const maxPallets = Math.max(0, probePlan.palletsEnCamion ?? 0);
+        palletsMaxPorStrategy[s] = maxPallets;
+
+        const pct = Math.max(1, Math.min(100, Number(cargaPct)));
+        const palletsSimulados = Math.max(
+          1,
+          Math.floor((maxPallets * pct) / 100),
+        );
+
+        palletsSimuladosPorStrategy[s] = palletsSimulados;
+        bultosSimuladosPorStrategy[s] =
+          resumenPalletBase.bultosPorPallet * palletsSimulados;
+
+        productosSimuladosPorStrategy[s] = resumenPalletBase.productos.map(
+          (p) => ({
+            ...p,
+            bultos: p.bultos * palletsSimulados,
+          }),
+        );
+
+        const plan = mk(s, buildPallets(palletsSimulados));
+        return [s, plan];
+      }
+
+      return [s, mk(s, palletsInput)];
+    }),
   ) as Record<CamionStrategy, CamionPlanResult>;
 
   const recommended_strategy = pickRecommended(plans_by_strategy);
@@ -169,5 +277,16 @@ export async function previewCamionPlan(params: {
     recommended_strategy,
     strategy_order: STRATEGIES,
     plans_by_strategy,
+    simulacion:
+      modo === "SIMULACION_CAMION_PCT"
+        ? {
+            modo,
+            cargaPct: Math.max(1, Math.min(100, Number(cargaPct))),
+            palletsMaxPorStrategy,
+            palletsSimuladosPorStrategy,
+            bultosSimuladosPorStrategy,
+            productosSimuladosPorStrategy,
+          }
+        : null,
   };
 }
