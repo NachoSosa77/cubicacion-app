@@ -2,7 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { calcularLayoutBulto3D } from "../lib/packing-bulto-3d";
-import type { BultoSimSnapshot, DimMm } from "../types/types";
+import type { BultoSimSnapshot, DimMm, RotationMode } from "../types/types";
 
 function safeInt(v: unknown, fallback = 0) {
   const n = Number(v);
@@ -25,6 +25,9 @@ export async function previewBultoLayout3D(params: {
 
   // override opcional (si elegís bulto empresa)
   bultoOverrideMm?: DimMm | null;
+
+  rotationMode?: RotationMode; // "NONE" | "ROT_6"
+  stopAtOcupacion01?: number | null; // 0..1 (opcional)
 }) {
   // =========================
   // 1) bulto interno desde snapshot u override
@@ -33,17 +36,30 @@ export async function previewBultoLayout3D(params: {
     (x) => x.dim_bulto_mm && x.dim_bulto_mm.largo > 0,
   );
 
-  const bultoInternoMm =
-    params.bultoOverrideMm ?? snapFirstWithDim?.dim_bulto_mm ?? null;
+  const override = tryDimMm(params.bultoOverrideMm);
+  const fromSnap = tryDimMm(snapFirstWithDim?.dim_bulto_mm);
 
-  if (!bultoInternoMm) {
+  const bultoInternoMm = override ?? fromSnap ?? null;
+
+  console.log("[BULTO_INTERNO_FINAL]", {
+    override: params.bultoOverrideMm ?? null,
+    fromSnap: snapFirstWithDim?.dim_bulto_mm ?? null,
+    resolved: bultoInternoMm,
+  });
+
+  if (
+    !bultoInternoMm ||
+    bultoInternoMm.largo <= 0 ||
+    bultoInternoMm.ancho <= 0 ||
+    bultoInternoMm.alto <= 0
+  ) {
     return {
       layout: {
         bulto: { dimInternaMm: { largo: 0, ancho: 0, alto: 0 } },
         contenido: [],
         placements: [],
         warnings: [
-          "No hay dim_bulto_mm en el snapshot (no se puede armar visor 3D).",
+          "No hay dimensiones internas válidas del bulto (override/snapshot).",
         ],
       },
     };
@@ -178,6 +194,11 @@ export async function previewBultoLayout3D(params: {
     bultoInternoMm,
     items: itemsForPacking,
     maxUnidades: 800,
+    rotationMode: params.rotationMode ?? "NONE",
+    stopAtOcupacion01:
+      typeof params.stopAtOcupacion01 === "number"
+        ? params.stopAtOcupacion01
+        : undefined,
   });
 
   // ✅ DEBUG: verificar “piso” real de los placements vs bulto

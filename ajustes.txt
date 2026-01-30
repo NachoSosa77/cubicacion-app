@@ -1,0 +1,123 @@
+1) ¿Estas tablas van en paralelo?
+
+Sí, conceptualmente van “en paralelo” pero con roles distintos:
+
+cubicacion_simulacion (tu 2da tabla): es el “contenedor” del workflow (Bulto → Pallet → Camión). Ahí vive el estado general de la simulación (BORRADOR/…).
+
+cubicacion_lote (tu 1ra tabla): es el dataset operativo (demanda + políticas + tipo_bulto…) que la simulación usa. En tu caso está marcado meta.origen="SIMULACION" → o sea, fue creado por la simulación.
+
+cubicacion_lote_item (tu 3ra tabla): son los renglones por SKU con lo importante: cantidad_unidades, cantidad_bultos, unidades_por_bulto, dim_bulto_mm, bulto_fuente, etc.
+
+📌 Entonces: Simulación referencia al Lote, y el Lote tiene sus Items.
+
+2) ¿Qué está “mal” en tus datos ahora?
+A) cubicacion_lote tiene unidades_totales=100 pero bultos_totales=0
+
+Eso ya es inconsistente: si el lote tiene items y uno tiene cantidad_bultos=6, el header debería reflejarlo.
+
+B) cubicacion_simulacion tiene unidades_totales=0 y bultos_totales=0
+
+Y eso es lo más típico de tu síntoma “al pasar a pallet no me guarda”:
+👉 tu pantalla de pallet probablemente lee simulacion.unidades_totales/bultos_totales o lote.bultos_totales para armar el resumen / habilitar acciones, y como están en 0, la UI se comporta como si no hubiera nada confirmado.
+
+C) cubicacion_lote_item sí tiene data coherente
+
+Ahí está la prueba de que algo se persistió bien:
+
+cantidad_unidades=100
+
+cantidad_bultos=6
+
+unidades_por_bulto=18
+
+unidades_en_ultimo_bulto=10
+
+bulto_fuente=EMPRESA_BULTO
+
+bulto_empresa_id=3
+
+dim_bulto_mm presente
+
+O sea: guardaste el detalle, pero no “publicaste”/sincronizaste el resumen.
+
+3) ¿Qué está pasando realmente?
+
+Muy probable que tu applyBultoSnapshotToLote y/o applyBultoSnapshotToSimulacion estén haciendo esto:
+
+upsert de cubicacion_lote_item ✅
+
+(quizás) setear algunas columnas del lote ✅/❌
+
+pero NO recalculan y actualizan:
+
+cubicacion_lote.bultos_totales
+
+cubicacion_simulacion.unidades_totales/bultos_totales
+
+y/o no guardan bulto_layout si corresponde
+
+Entonces el paso pallet “mira el header” y te dice “vacío”, aunque los items existen.
+
+4) Fix mínimo (lo que tenés que hacer ahora)
+
+En el server action cuando aplicás el snapshot, al final hacé un update del header con totales derivados de los items (o directamente del snapshot).
+
+✅ A) Actualizar cubicacion_lote (header)
+
+unidades_totales = sum(items.cantidad_unidades)
+
+bultos_totales = sum(items.cantidad_bultos)
+
+tipo_bulto, bulto_empresa_id (si aplica)
+
+packing_policy (si la manejás ahí)
+
+bulto_layout (si lo estás guardando ahí)
+
+✅ B) Actualizar cubicacion_simulacion (header)
+
+unidades_totales y bultos_totales con el mismo criterio
+
+opcional: setear status si “Guardar y continuar” implica publicar
+
+📌 Si tu UI de pallet depende del lote: con A alcanza.
+📌 Si depende de simulación: necesitás B sí o sí.
+
+5) Confirmación rápida con SQL (para que veas dónde lee pallet)
+
+Corré estas 2:
+
+1) ¿Header vs items?
+
+SELECT
+  l.id,
+  l.unidades_totales AS lote_unidades_totales,
+  l.bultos_totales   AS lote_bultos_totales,
+  SUM(li.cantidad_unidades) AS items_unidades,
+  SUM(li.cantidad_bultos)   AS items_bultos
+FROM cubicacion_lote l
+LEFT JOIN cubicacion_lote_item li ON li.lote_id = l.id
+WHERE l.id = 5
+GROUP BY l.id;
+
+
+2) ¿Simulación está desfasada?
+
+SELECT
+  s.id,
+  s.lote_id,
+  s.unidades_totales AS sim_unidades_totales,
+  s.bultos_totales   AS sim_bultos_totales
+FROM cubicacion_simulacion s
+WHERE s.id = 5;
+
+
+Si te devuelve “items_bultos=6” pero “lote_bultos_totales=0”, ya está: es esto.
+
+6) Respuesta puntual a tu pregunta
+
+“cuando pasamos a pallet puede ser que no me este guardando los datos, solo los deja en un estado?”
+
+Sí: te está guardando los ítems, pero te está faltando sincronizar/persistir el resumen (headers), y el paso pallet probablemente está leyendo el header.
+
+Si me pegás de dónde lee la pantalla de pallet (qué query/action usa para armar el resumen: si toma cubicacion_simulacion o cubicacion_lote), te digo exactamente qué update es imprescindible y dónde ponerlo (en applyBultoSnapshotToSimulacion, applyBultoSnapshotToLote, o ambos).

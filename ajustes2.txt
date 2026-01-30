@@ -1,0 +1,128 @@
+El error es 100% de tipos y viene de dos problemas combinados:
+
+Estás importando BultoSimSnapshot de dos módulos distintos, entonces TS los considera tipos diferentes aunque “se llamen igual”.
+
+Además, el scope no coincide: en simulación tenés "SKU" | "MIXTO", pero en pallet el tipo espera "SKU" | "LOTE" | undefined.
+
+Te dejo la solución “pro” (la que te conviene) y una alternativa rápida.
+
+✅ Solución pro (recomendada): unificar el tipo y ampliar scope
+Paso 1 — Definí un solo tipo base compartido
+
+Creá (o elegí) un archivo único tipo “shared”, por ejemplo:
+
+app/cubicacion/types/bultoSnapshot.ts
+
+// app/cubicacion/types/bultoSnapshot.ts
+export type BultoScope = "SKU" | "MIXTO" | "LOTE";
+
+export type DimMm = { largo: number; ancho: number; alto: number };
+
+export type BultoSimSnapshotItem = {
+  tipo_producto_id: number;
+  codigo: string;
+  unidades_planificadas: number;
+  unidades_por_bulto: number;
+  cantidad_bultos: number;
+  sobrante_unidades: number;
+  dim_bulto_mm: DimMm | null;
+  audit?: Record<string, any>;
+};
+
+export type BultoSimSnapshot = {
+  candidateKey: "A" | "B" | "C" | "D";
+  titulo: string;
+  scope?: BultoScope;
+  permiteMezcla?: boolean;
+  porcentajeMezcla01?: number;
+  items: BultoSimSnapshotItem[];
+  warnings?: string[];
+  totales: {
+    unidades: number;
+    bultos: number;
+    bultosParciales: number;
+  };
+  layout3d?: any; // si querés tiparlo luego, acá lo afinamos
+};
+
+Paso 2 — En simulación dejá de exportar su propio BultoSimSnapshot
+
+En app/cubicacion/simulacion/types/types.ts, cambiá a:
+
+export type { BultoSimSnapshot, BultoSimSnapshotItem, BultoScope } from "@/app/cubicacion/types/bultoSnapshot";
+
+
+o directamente reemplazá el tipo local por imports desde el shared.
+
+Paso 3 — En pallet importá el MISMO tipo shared
+
+En PalletClientSimV2.tsx (y en el tipo del parámetro que recibe bultoSnapshot), asegurate que ambos lados usen:
+
+import type { BultoSimSnapshot } from "@/app/cubicacion/types/bultoSnapshot";
+
+
+y eliminá imports tipo:
+
+import type { BultoSimSnapshot } from "../simulacion/types/types";
+
+
+o viceversa. Uno solo.
+
+Paso 4 — Ajustá el tipo del parámetro de la action/función de pallet
+
+El error dice que el parámetro espera:
+
+scope?: "SKU" | "LOTE"
+
+y vos le pasás "MIXTO".
+
+Entonces en el type del request (el que está tipando el parámetro de previewPalletPlan o lo que estés llamando), cambiá:
+
+scope?: "SKU" | "LOTE";
+
+
+por:
+
+scope?: "SKU" | "MIXTO" | "LOTE";
+
+
+o mejor:
+
+import type { BultoScope } from "@/app/cubicacion/types/bultoSnapshot";
+scope?: BultoScope;
+
+
+✅ Con eso se termina el error: mismo tipo + scope compatible.
+
+⚡ Solución rápida (si querés compilar hoy, pero es menos limpia)
+Opción A: mapear MIXTO → LOTE antes de mandar a pallet
+
+En PalletClientSimV2.tsx, cuando armas el request:
+
+import type { BultoSimSnapshot as SnapSim } from "@/app/cubicacion/simulacion/types/types";
+import type { BultoSimSnapshot as SnapPallet } from "@/app/cubicacion/pallet/types/types"; // ejemplo
+
+function normalizeSnapForPallet(snap?: SnapSim): SnapPallet | undefined {
+  if (!snap) return undefined;
+  return {
+    ...snap,
+    scope: snap.scope === "MIXTO" ? "LOTE" : snap.scope, // hack
+  } as unknown as SnapPallet;
+}
+
+
+y pasás normalizeSnapForPallet(bultoSnapshot).
+
+👉 Esto compila, pero estás escondiendo el problema real (dos tipos distintos).
+
+Opción B: casteo “a lo bruto”
+bultoSnapshot: bultoSnapshot as any
+
+
+No te lo recomiendo salvo emergencia.
+
+¿Qué te conviene hacer acá?
+
+Como estás armando flujo serio Bulto → Pallet → Camión, hacé la pro: unificar tipos + ampliar scope. Te evita que esto vuelva a explotar cuando empieces con “bin packing PRO” y metas más campos.
+
+Si me pegás la firma exacta de la función/action que estás llamando desde PalletClientSimV2.tsx (la que recibe { ... bultoSnapshot }), te digo exactamente en qué archivo está el type que espera "SKU" | "LOTE" para tocarlo en 1 lugar y listo.

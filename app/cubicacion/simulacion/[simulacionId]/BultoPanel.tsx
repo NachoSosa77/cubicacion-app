@@ -6,29 +6,15 @@ import { applyBultoSnapshotToLote } from "../../actions/applyBultoSnapshotToLote
 import { applyBultoSnapshotToSimulacion } from "../../actions/applyBultoSnapshotToSimulacion";
 import { BultoViewerFromSnapshot } from "../../components/BultoViewerFromSnapshot";
 import { previewBultoLayout3D } from "../actions/previewBultoLayout3D";
+import { getEmpresaBultoInnerDim } from "../lib/bultos";
+import { RotationMode, rotations6 } from "../lib/packing-metrics";
+import { DimMm, EmpresaBultoDTO } from "../types/domains";
 import type {
   BultoLayout3D,
   BultoSimSnapshot,
   BultoSimSnapshotItem,
   SourceTag,
 } from "../types/types";
-
-type DimMm = { largo: number; ancho: number; alto: number };
-
-type EmpresaBulto = {
-  id: number;
-  empresa_id: number;
-  codigo: string;
-  descripcion?: string | null;
-  largo_mm: number;
-  ancho_mm: number;
-  alto_mm: number;
-  espesor_pared_mm: number;
-  tara_kg?: number | null;
-  max_peso_kg?: number | null;
-  es_preferido: boolean;
-  habilitado: boolean;
-};
 
 type ClientLoteItem = {
   id: number;
@@ -58,7 +44,6 @@ type ClientLote = {
   bultos_totales: number;
   items: ClientLoteItem[];
 };
-
 
 /* =========================
    Helpers
@@ -107,6 +92,12 @@ function fmtDim(d?: DimMm | null) {
   return `${d.largo}×${d.ancho}×${d.alto} mm`;
 }
 
+function fmtBultoEmpresaOption(b: EmpresaBultoDTO) {
+  const inner = getEmpresaBultoInnerDim(b);
+  const innerTxt = inner ? `${inner.largo}×${inner.ancho}×${inner.alto}` : "—";
+  return `${b.codigo} — int ${innerTxt} mm`;
+}
+
 function pill(text: string) {
   return (
     <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700 shadow-sm">
@@ -117,32 +108,111 @@ function pill(text: string) {
 
 /**
  * unidades_por_bulto por grilla (sin rotación).
- * Interior = dims - 2*espesor
+ * dimBulto debe venir en medidas internas útiles.
  */
-function calcUnidadesPorBultoGrid(args: {
-  dimBulto: DimMm;
-  dimUnidad: DimMm;
-  espesorParedMm?: number;
-}) {
+function calcUnidadesPorBultoGrid(args: { dimBulto: DimMm; dimUnidad: DimMm }) {
   const { dimBulto, dimUnidad } = args;
-  const esp = Math.max(0, safeInt(args.espesorParedMm ?? 0, 0));
 
-  const inner = {
-    largo: Math.max(0, dimBulto.largo - 2 * esp),
-    ancho: Math.max(0, dimBulto.ancho - 2 * esp),
-    alto: Math.max(0, dimBulto.alto - 2 * esp),
-  };
+  if (!isValidDim(dimBulto) || !isValidDim(dimUnidad)) return 0;
 
-  if (!isValidDim(inner)) return 0;
-
-  const nx = Math.floor(inner.largo / dimUnidad.largo);
-  const ny = Math.floor(inner.ancho / dimUnidad.ancho);
-  const nz = Math.floor(inner.alto / dimUnidad.alto);
+  const nx = Math.floor(dimBulto.largo / dimUnidad.largo);
+  const ny = Math.floor(dimBulto.ancho / dimUnidad.ancho);
+  const nz = Math.floor(dimBulto.alto / dimUnidad.alto);
 
   if (nx <= 0 || ny <= 0 || nz <= 0) return 0;
 
   return nx * ny * nz;
 }
+
+/**
+ * ✅ grilla + rotación (usa rotations6 del proyecto)
+ * Devuelve capacidad máxima y la orientación que la logra.
+ */
+function calcUnidadesPorBultoGridRot(args: {
+  dimBulto: DimMm; // internas
+  dimUnidad: DimMm;
+  rotationMode: RotationMode;
+}) {
+  const { dimBulto, dimUnidad, rotationMode } = args;
+
+  if (!isValidDim(dimBulto) || !isValidDim(dimUnidad)) {
+    return { max: 0, best: null as { dim: DimMm; key: string } | null };
+  }
+
+  const candidates =
+    rotationMode === "ROT_6"
+      ? rotations6(dimUnidad)
+      : [{ dim: dimUnidad, key: "SIN_ROTACION" }];
+
+  let bestMax = 0;
+  let best: { dim: DimMm; key: string } | null = null;
+
+  for (const c of candidates) {
+    const u = c.dim;
+
+    const nx = Math.floor(dimBulto.largo / u.largo);
+    const ny = Math.floor(dimBulto.ancho / u.ancho);
+    const nz = Math.floor(dimBulto.alto / u.alto);
+
+    const cap = nx > 0 && ny > 0 && nz > 0 ? nx * ny * nz : 0;
+
+    if (cap > bestMax) {
+      bestMax = cap;
+      best = c;
+    }
+  }
+
+  return { max: bestMax, best };
+}
+
+function clamp01(x: number) {
+  if (!Number.isFinite(x)) return 0;
+  return Math.min(1, Math.max(0, x));
+}
+
+function volMm3(d?: DimMm | null) {
+  if (!d) return 0;
+  return Math.max(0, d.largo) * Math.max(0, d.ancho) * Math.max(0, d.alto);
+}
+
+function pctTxt01(x01: number | null | undefined) {
+  if (x01 == null) return "—";
+  const p = Math.round(clamp01(x01) * 1000) / 10; // 1 decimal
+  return `${p}%`;
+}
+
+/**
+ * Ocupación REAL volumétrica (output): usa unidades colocadas * volUnidad / volBulto
+ * - Si no hay layout, devolvemos null.
+ * - Si no hay dimUnidad, devolvemos null (no se puede estimar).
+ */
+function ocupacionRealVol01(args: {
+  bultoDim: DimMm | null;
+  unidadDim: DimMm | null;
+  placedUnits: number | null; // layout.placements.length (o contenido.length)
+}) {
+  const { bultoDim, unidadDim, placedUnits } = args;
+  if (!isValidDim(bultoDim) || !isValidDim(unidadDim)) return null;
+  if (!Number.isFinite(placedUnits as number) || (placedUnits as number) <= 0) return 0;
+
+  const vb = volMm3(bultoDim);
+  const vu = volMm3(unidadDim);
+  if (vb <= 0 || vu <= 0) return null;
+
+  return clamp01(((placedUnits as number) * vu) / vb);
+}
+
+/**
+ * Ocupación por capacidad (output): placed / capMax
+ * - capMax viene de grilla (con o sin rotación).
+ */
+function ocupacionPorCap01(args: { placedUnits: number | null; capMax: number }) {
+  const { placedUnits, capMax } = args;
+  if (!Number.isFinite(capMax) || capMax <= 0) return null;
+  if (!Number.isFinite(placedUnits as number) || (placedUnits as number) <= 0) return 0;
+  return clamp01((placedUnits as number) / capMax);
+}
+
 
 function calcBultos(unidadesPlan: number, unPorBulto: number) {
   if (unPorBulto <= 0) return { bultos: 0, sobrante: 0, parcial: false };
@@ -184,13 +254,15 @@ export function BultoPanel({
   simulacionId: number;
   simulacionLoteId: number | null;
   lote: ClientLote;
-  empresaBultos: EmpresaBulto[];
+  empresaBultos: EmpresaBultoDTO[];
   onApply: (snap: BultoSimSnapshot) => void;
 }) {
   const [applyLoading, setApplyLoading] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [permiteMezcla, setPermiteMezcla] = useState<boolean>(false);
   const [porcentajeMezcla, setPorcentajeMezcla] = useState<number>(0.5);
+  const [rotationMode, setRotationMode] = useState<RotationMode>("ROT_6"); // default pro
+  const [objetivoOcupacion01, setObjetivoOcupacion01] = useState<number>(0.85); // 85% default pro
 
   const hasMultiSkuLote = (lote.items?.length ?? 0) > 1;
 
@@ -198,18 +270,13 @@ export function BultoPanel({
   // Estado Operativo (C)
   // =========================
 
-  // demanda editable por SKU
   const [planUnitsBySku, setPlanUnitsBySku] = useState<Record<number, string>>(
     () =>
       Object.fromEntries(
-        lote.items.map((it) => [
-          it.tipo_producto_id,
-          String(it.cantidad_unidades),
-        ]),
+        lote.items.map((it) => [it.tipo_producto_id, String(it.cantidad_unidades)]),
       ),
   );
 
-  // Selección de bulto empresa (global + por SKU)
   const defaultEmpresaBultoId =
     lote.bulto_empresa_id ??
     empresaBultos.find((b) => b.es_preferido)?.id ??
@@ -228,22 +295,19 @@ export function BultoPanel({
   const [draftLayout, setDraftLayout] = useState<BultoLayout3D | null>(null);
   const [draftKey, setDraftKey] = useState<"A" | "B" | "C" | "D" | null>(null);
 
-  // override por SKU (Avanzado)
-  const [bultoEmpresaIdBySku, setBultoEmpresaIdBySku] = useState<
-    Record<number, number | "">
-  >({});
+  const [bultoEmpresaIdBySku, setBultoEmpresaIdBySku] = useState<Record<number, number | "">>(
+    {},
+  );
 
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
   const empresaBultoMap = useMemo(() => {
-    const m = new Map<number, EmpresaBulto>();
+    const m = new Map<number, EmpresaBultoDTO>();
     for (const b of empresaBultos) m.set(b.id, b);
     return m;
   }, [empresaBultos]);
 
-  const pickBultoEmpresaForSku = (
-    tipoProductoId: number,
-  ): EmpresaBulto | null => {
+  const pickBultoEmpresaForSku = (tipoProductoId: number): EmpresaBultoDTO | null => {
     const skuId = bultoEmpresaIdBySku[tipoProductoId];
     if (typeof skuId === "number") return empresaBultoMap.get(skuId) ?? null;
 
@@ -264,34 +328,21 @@ export function BultoPanel({
     const warnings: string[] = [];
 
     const items = lote.items.map((it) => {
-      // 1) unidades planificadas (base)
       const unidadesPlan = safePosInt(it.cantidad_unidades, 0);
 
-      // 2) REGLA A: capacidad SOLO desde catálogo (restricción)
       const unPorBulto = safePosInt(it.tipo_producto.unidad_entra_por_bulto, 0);
       if (unPorBulto <= 0) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: unidad_entra_por_bulto inválido en catálogo.`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: unidad_entra_por_bulto inválido en catálogo.`);
       }
 
-      // 3) bultos calculados SOLO con la restricción catálogo
-      const { bultos, sobrante, parcial } = calcBultos(
-        unidadesPlan,
-        unPorBulto,
-      );
+      const { bultos, sobrante, parcial } = calcBultos(unidadesPlan, unPorBulto);
       if (parcial) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`);
       }
 
-      // 4) REGLA A: dimensiones SOLO desde catálogo
-      const dim: DimMm | null = asDimBultoStd(it); // usa largo/ancho/alto_por_bulto
+      const dim: DimMm | null = asDimBultoStd(it);
       if (!isValidDim(dim)) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: faltan dims estándar (largo/ancho/alto_por_bulto).`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: faltan dims estándar (largo/ancho/alto_por_bulto).`);
       }
 
       return {
@@ -310,24 +361,14 @@ export function BultoPanel({
     });
 
     const unidades =
-      safePosInt(lote.unidades_totales, 0) ||
-      items.reduce((a, x) => a + x.unidades_planificadas, 0);
+      safePosInt(lote.unidades_totales, 0) || items.reduce((a, x) => a + x.unidades_planificadas, 0);
 
     const bultosTot =
-      safePosInt(lote.bultos_totales, 0) ||
-      items.reduce((a, x) => a + x.cantidad_bultos, 0);
+      safePosInt(lote.bultos_totales, 0) || items.reduce((a, x) => a + x.cantidad_bultos, 0);
 
-    const bultosParciales = items.reduce(
-      (a, x) => a + (isParcialRow(x) ? 1 : 0),
-      0,
-    );
+    const bultosParciales = items.reduce((a, x) => a + (isParcialRow(x) ? 1 : 0), 0);
 
-    if (permiteMezcla) {
-      warnings.push(
-        "La mezcla de productos requiere un bulto de empresa."
-      );
-    }
-
+    if (permiteMezcla) warnings.push("La mezcla de productos requiere un bulto de empresa.");
 
     return {
       candidateKey: "A",
@@ -337,7 +378,7 @@ export function BultoPanel({
       warnings,
       totales: { unidades, bultos: bultosTot, bultosParciales },
     };
-  }, [lote.items, lote.unidades_totales, lote.bultos_totales]);
+  }, [lote.items, lote.unidades_totales, lote.bultos_totales, permiteMezcla]);
 
   // =========================
   // Candidate B (bulto empresa)
@@ -349,18 +390,17 @@ export function BultoPanel({
     const items = lote.items.map((it) => {
       const unidadesPlan = safePosInt(it.cantidad_unidades, 0);
 
-      // 1) bulto empresa (global o por SKU)
       const b = pickBultoEmpresaForSku(it.tipo_producto_id);
-      const dimBulto: DimMm | null = b
-        ? { largo: b.largo_mm, ancho: b.ancho_mm, alto: b.alto_mm }
-        : null;
+      const dimBulto: DimMm | null = b ? getEmpresaBultoInnerDim(b) : null;
 
-      // 2) dim unidad (debe existir para recalcular)
       const dimUnidad = tryDimUnidad(it);
 
       let unPorBulto = 0;
       let sourceUn: SourceTag = "FALLBACK";
       let sourceDim: SourceTag = "FALLBACK";
+
+      // Para controlar warnings “derivados”
+      let attemptedCalc = false;
 
       if (!isValidDim(dimBulto)) {
         warnings.push(
@@ -374,36 +414,48 @@ export function BultoPanel({
             `${it.tipo_producto.codigo}: falta dim_unidad_mm; no se puede recalcular por bulto empresa.`,
           );
         } else {
-          const espesor = b?.espesor_pared_mm ?? 0;
+          attemptedCalc = true;
 
-          const grid = calcUnidadesPorBultoGrid({
+          // ✅ capacidad geométrica usando rotación (o no)
+          const rot = calcUnidadesPorBultoGridRot({
             dimBulto: dimBulto!,
             dimUnidad: dimUnidad!,
-            espesorParedMm: espesor,
+            rotationMode,
           });
 
-          if (grid <= 0) {
+          const gridMax = rot.max;
+
+          if (gridMax <= 0) {
             warnings.push(
-              `${it.tipo_producto.codigo}: no entra por grilla con el bulto empresa seleccionado.`,
+              `${it.tipo_producto.codigo}: no entra por grilla (ni con rotación) con el bulto empresa seleccionado.`,
             );
           } else {
-            unPorBulto = grid; // <- SIN tope por catálogo
             sourceUn = "BULTO_EMPRESA";
+
+            // (opcional) clamp defensivo; si tu slider ya tiene min 10% podés sacarlo
+            const obj01 = Math.min(1, Math.max(0.1, objetivoOcupacion01));
+
+            const gridObj = Math.floor(gridMax * obj01);
+            unPorBulto = gridObj > 0 ? gridObj : 0;
+
+            if (gridObj === 0) {
+              warnings.push(
+                `${it.tipo_producto.codigo}: objetivo de ocupación demasiado bajo; capacidad objetivo=0.`,
+              );
+            }
           }
         }
       }
 
-      const { bultos, sobrante, parcial } = calcBultos(
-        unidadesPlan,
-        unPorBulto,
-      );
+      const { bultos, sobrante, parcial } = calcBultos(unidadesPlan, unPorBulto);
 
-      // warnings adicionales coherentes
-      if (unPorBulto <= 0) {
+      // ⚠️ Warning genérico SOLO si intentamos calcular y dio 0
+      if (attemptedCalc && unPorBulto <= 0) {
         warnings.push(
           `${it.tipo_producto.codigo}: un/bulto inválido en B (revisar bulto empresa o dim_unidad_mm).`,
         );
       }
+
       if (parcial) {
         warnings.push(
           `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
@@ -448,7 +500,11 @@ export function BultoPanel({
     bultoEmpresaIdGlobal,
     bultoEmpresaIdBySku,
     empresaBultos,
+    permiteMezcla,
+    rotationMode,
+    objetivoOcupacion01,
   ]);
+
 
   // =========================
   // Candidate C (catálogo + unidades editables)
@@ -458,39 +514,23 @@ export function BultoPanel({
     const warnings: string[] = [];
 
     const items = lote.items.map((it) => {
-      const planStr =
-        planUnitsBySku[it.tipo_producto_id] ?? String(it.cantidad_unidades);
+      const planStr = planUnitsBySku[it.tipo_producto_id] ?? String(it.cantidad_unidades);
 
-      const unidadesPlan = safePosInt(
-        planStr,
-        safePosInt(it.cantidad_unidades, 0),
-      );
+      const unidadesPlan = safePosInt(planStr, safePosInt(it.cantidad_unidades, 0));
 
-      // 1) Bulto SIEMPRE catálogo (producto)
       const dimBulto = asDimBultoStd(it);
       if (!isValidDim(dimBulto)) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: faltan dims catálogo (largo/ancho/alto_por_bulto).`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: faltan dims catálogo (largo/ancho/alto_por_bulto).`);
       }
 
-      // 2) Capacidad SIEMPRE restricción del producto
       const unPorBulto = safePosInt(it.tipo_producto.unidad_entra_por_bulto, 0);
       if (unPorBulto <= 0) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: unidad_entra_por_bulto inválido en catálogo.`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: unidad_entra_por_bulto inválido en catálogo.`);
       }
 
-      // 3) Recalcular bultos según nuevas unidades
-      const { bultos, sobrante, parcial } = calcBultos(
-        unidadesPlan,
-        unPorBulto,
-      );
+      const { bultos, sobrante, parcial } = calcBultos(unidadesPlan, unPorBulto);
       if (parcial) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`);
       }
 
       const audit: BultoSimSnapshotItem["audit"] = {
@@ -510,17 +550,9 @@ export function BultoPanel({
       };
     });
 
-    const bultosParciales = items.reduce(
-      (a, x) => a + (isParcialRow(x) ? 1 : 0),
-      0,
-    );
+    const bultosParciales = items.reduce((a, x) => a + (isParcialRow(x) ? 1 : 0), 0);
 
-    if (permiteMezcla) {
-      warnings.push(
-        "La mezcla de productos requiere un bulto de empresa."
-      );
-    }
-
+    if (permiteMezcla) warnings.push("La mezcla de productos requiere un bulto de empresa.");
 
     return {
       candidateKey: "C",
@@ -534,7 +566,7 @@ export function BultoPanel({
         bultosParciales,
       },
     };
-  }, [lote.items, planUnitsBySku]);
+  }, [lote.items, planUnitsBySku, permiteMezcla]);
 
   // =========================
   // Candidate D (bulto empresa + unidades editables, MAXIMIZAR capacidad geométrica)
@@ -544,69 +576,47 @@ export function BultoPanel({
     const warnings: string[] = [];
 
     const items = lote.items.map((it) => {
-      const planStr =
-        planUnitsBySku[it.tipo_producto_id] ?? String(it.cantidad_unidades);
+      const planStr = planUnitsBySku[it.tipo_producto_id] ?? String(it.cantidad_unidades);
 
-      const unidadesPlan = safePosInt(
-        planStr,
-        safePosInt(it.cantidad_unidades, 0),
-      );
+      const unidadesPlan = safePosInt(planStr, safePosInt(it.cantidad_unidades, 0));
 
-      // 1) bulto empresa seleccionado
       const b = pickBultoEmpresaForSku(it.tipo_producto_id);
-      const dimBulto: DimMm | null = b
-        ? { largo: b.largo_mm, ancho: b.ancho_mm, alto: b.alto_mm }
-        : null;
-
-      const espesorParedMm = b?.espesor_pared_mm ?? 0;
+      const dimBulto: DimMm | null = b ? getEmpresaBultoInnerDim(b) : null;
 
       if (!isValidDim(dimBulto)) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: en D debés seleccionar un bulto empresa válido (global o por SKU).`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: en D debés seleccionar un bulto empresa válido (global o por SKU).`);
       }
 
-      // 2) dim unidad obligatoria para maximizar
       const dimUnidad = tryDimUnidad(it);
       if (!isValidDim(dimUnidad)) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: falta dim_unidad_mm; no se puede maximizar ocupación.`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: falta dim_unidad_mm; no se puede maximizar ocupación.`);
       }
 
-      // 3) capacidad geométrica (grilla)
       let unPorBulto = 0;
 
       if (isValidDim(dimBulto) && isValidDim(dimUnidad)) {
-        unPorBulto = calcUnidadesPorBultoGrid({
+        // ✅ ACÁ: D maximiza (usa rotación si está habilitada)
+        const rot = calcUnidadesPorBultoGridRot({
           dimBulto: dimBulto!,
           dimUnidad: dimUnidad!,
-          espesorParedMm,
+          rotationMode,
         });
 
+        unPorBulto = rot.max;
+
         if (unPorBulto <= 0) {
-          warnings.push(
-            `${it.tipo_producto.codigo}: la unidad no entra por grilla con el bulto empresa seleccionado.`,
-          );
+          warnings.push(`${it.tipo_producto.codigo}: la unidad no entra por grilla con el bulto empresa seleccionado.`);
         }
       }
 
-      // 4) bultos según capacidad máxima
-      const { bultos, sobrante, parcial } = calcBultos(
-        unidadesPlan,
-        unPorBulto,
-      );
+      const { bultos, sobrante, parcial } = calcBultos(unidadesPlan, unPorBulto);
 
       if (unPorBulto <= 0) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: un/bulto inválido en D (revisar bulto empresa o dim_unidad_mm).`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: un/bulto inválido en D (revisar bulto empresa o dim_unidad_mm).`);
       }
 
       if (parcial) {
-        warnings.push(
-          `${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`,
-        );
+        warnings.push(`${it.tipo_producto.codigo}: último bulto parcial (${sobrante} un).`);
       }
 
       const audit: BultoSimSnapshotItem["audit"] = {
@@ -628,10 +638,7 @@ export function BultoPanel({
       };
     });
 
-    const bultosParciales = items.reduce(
-      (a, x) => a + (isParcialRow(x) ? 1 : 0),
-      0,
-    );
+    const bultosParciales = items.reduce((a, x) => a + (isParcialRow(x) ? 1 : 0), 0);
 
     return {
       candidateKey: "D",
@@ -645,36 +652,24 @@ export function BultoPanel({
         bultosParciales,
       },
     };
-  }, [lote.items, planUnitsBySku, pickBultoEmpresaForSku]);
+  }, [
+    lote.items,
+    planUnitsBySku,
+    pickBultoEmpresaForSku,
+    permiteMezcla,
+    rotationMode,
+  ]);
 
   const [selected, setSelected] = useState<"A" | "B" | "C" | "D">("A");
 
   const active =
-    selected === "A"
-      ? candidateA
-      : selected === "B"
-        ? candidateB
-        : selected === "C"
-          ? candidateC
-          : candidateD;
+    selected === "A" ? candidateA : selected === "B" ? candidateB : selected === "C" ? candidateC : candidateD;
 
-  const isMixEnabled =
-    permiteMezcla && selected !== "A" && hasMultiSkuLote;
-
+  const isMixEnabled = permiteMezcla && selected !== "A" && hasMultiSkuLote;
 
   const activeWithMix: BultoSimSnapshot = isMixEnabled
-    ? {
-      ...active,
-      scope: "MIXTO",
-      permiteMezcla: true,
-      porcentajeMezcla01: porcentajeMezcla,
-    }
-    : {
-      ...active,
-      scope: "SKU",
-      permiteMezcla: false,
-      porcentajeMezcla01: undefined,
-    };
+    ? { ...active, scope: "MIXTO", permiteMezcla: true, porcentajeMezcla01: porcentajeMezcla }
+    : { ...active, scope: "SKU", permiteMezcla: false, porcentajeMezcla01: undefined };
 
   const setPlanForSku = (tipoProductoId: number, v: string) => {
     setPlanUnitsBySku((prev) => ({ ...prev, [tipoProductoId]: v }));
@@ -690,10 +685,7 @@ export function BultoPanel({
   };
 
   const canApply =
-    draftKey === selected &&
-    !!draftLayout &&
-    Array.isArray(draftLayout.placements) &&
-    draftLayout.placements.length > 0;
+    draftKey === selected && !!draftLayout && Array.isArray(draftLayout.placements) && draftLayout.placements.length > 0;
 
   const effectiveLoteId =
     typeof simulacionLoteId === "number" && simulacionLoteId > 0
@@ -701,7 +693,6 @@ export function BultoPanel({
       : typeof lote?.id === "number" && lote.id > 0
         ? lote.id
         : null;
-
 
   const guardarYContinuar = async () => {
     if (selected !== "A" && !draftLayout) return;
@@ -711,18 +702,11 @@ export function BultoPanel({
 
     try {
       const snapToApply = snapForSave;
-      // 1) siempre: simulación
-      await applyBultoSnapshotToSimulacion({
-        simulacionId,
-        snap: snapToApply,
-      });
 
-      // 2) si hay lote asociado: publicar también al lote
+      await applyBultoSnapshotToSimulacion({ simulacionId, snap: snapToApply });
+
       if (effectiveLoteId != null) {
-        await applyBultoSnapshotToLote({
-          loteId: effectiveLoteId,
-          snap: snapToApply,
-        });
+        await applyBultoSnapshotToLote({ loteId: effectiveLoteId, snap: snapToApply });
       }
 
       setAppliedSnap(snapToApply);
@@ -750,9 +734,7 @@ export function BultoPanel({
 
   const hasMultiSku = skuOptions.length > 1;
 
-  const [viewerSkuId, setViewerSkuId] = useState<number>(
-    () => skuOptions[0]?.tipo_producto_id ?? 0,
-  );
+  const [viewerSkuId, setViewerSkuId] = useState<number>(() => skuOptions[0]?.tipo_producto_id ?? 0);
 
   const loteItemBySku = useMemo(() => {
     const m = new Map<number, ClientLoteItem>();
@@ -761,75 +743,117 @@ export function BultoPanel({
   }, [lote.items]);
 
   const activeItemForViewer = useMemo(() => {
-    return (
-      active.items.find((x) => x.tipo_producto_id === viewerSkuId) ??
-      active.items[0] ??
-      null
-    );
+    return active.items.find((x) => x.tipo_producto_id === viewerSkuId) ?? active.items[0] ?? null;
   }, [active.items, viewerSkuId]);
 
   const snapForLayout = useMemo(() => {
-    // A = SIEMPRE 1 SKU por bulto (el del visor)
     if (selected === "A" && activeItemForViewer) {
       return { ...active, scope: "SKU" as const, items: [activeItemForViewer] };
     }
-    // En B/C/D queda como esté (si luego soportás MIXTO, será multi)
     return active;
-  }, [selected, active, activeItemForViewer])
+  }, [selected, active, activeItemForViewer]);
 
   const snapForSave = useMemo<BultoSimSnapshot>(() => {
-    // A: guardamos TODO el snapshot completo (todos los SKUs) y SIN layout3d
     if (selected === "A") {
-      return {
-        ...candidateA,
-        scope: "SKU",
-        permiteMezcla: false,
-        porcentajeMezcla01: undefined,
-      };
+      return { ...candidateA, scope: "SKU", permiteMezcla: false, porcentajeMezcla01: undefined };
     }
-
-    // B/C/D: guardamos el snapshot con mezcla si aplica + layout3d
-    return {
-      ...activeWithMix,
-      layout3d: draftLayout ?? undefined,
-    };
+    return { ...activeWithMix, layout3d: draftLayout ?? undefined };
   }, [selected, candidateA, activeWithMix, draftLayout]);
-
 
   const unidadDimForViewer = useMemo(() => {
     const it = loteItemBySku.get(activeItemForViewer?.tipo_producto_id ?? -1);
     return it ? tryDimUnidad(it) : null;
   }, [loteItemBySku, activeItemForViewer]);
 
-  const layoutForViewer =
-    draftKey === selected && draftLayout
-      ? draftLayout
-      : (appliedSnap?.layout3d ?? null);
+  const layoutForViewer = draftKey === selected && draftLayout ? draftLayout : appliedSnap?.layout3d ?? null;
+
+  const bultoEmpresaForViewer =
+    selected === "B" || selected === "D" ? pickBultoEmpresaForSku(viewerSkuId) : null;
+
+  const overrideFromEmpresa = useMemo(() => {
+    if (!bultoEmpresaForViewer) return null;
+    const inner = getEmpresaBultoInnerDim(bultoEmpresaForViewer);
+    return inner && isValidDim(inner) ? inner : null;
+  }, [bultoEmpresaForViewer]);
+
+  const bultoDimForViewer =
+    (selected === "B" || selected === "D") && overrideFromEmpresa ? overrideFromEmpresa : activeItemForViewer?.dim_bulto_mm ?? null;
+
+  // =========================
+  // Métricas (máximo / objetivo / ocupación real)
+  // =========================
+
+  const placedUnitsForViewer = useMemo(() => {
+    // preferimos placements si existen; sino contenido (si lo usás)
+    const p = layoutForViewer?.placements?.length ?? 0;
+    const c = (layoutForViewer as any)?.contenido?.length ?? 0;
+    const n = Math.max(p, c);
+    return n > 0 ? n : null; // null = sin layout
+  }, [layoutForViewer]);
+
+  const capMaxForViewer = useMemo(() => {
+    // Solo tiene sentido en B/D, porque dependen del bulto empresa + unidad
+    if (selected !== "B" && selected !== "D") return null;
+    if (!isValidDim(bultoDimForViewer) || !isValidDim(unidadDimForViewer)) return null;
+
+    // Con rotación o sin rotación
+    const res = calcUnidadesPorBultoGridRot({
+      dimBulto: bultoDimForViewer!,
+      dimUnidad: unidadDimForViewer!,
+      rotationMode,
+    });
+
+    return res.max > 0 ? res.max : 0;
+  }, [selected, bultoDimForViewer, unidadDimForViewer, rotationMode]);
+
+  const capObjetivoForViewer = useMemo(() => {
+    // Solo B aplica "recorte" operativo por objetivo
+    if (selected !== "B") return null;
+    if (!Number.isFinite(capMaxForViewer as number) || (capMaxForViewer as number) <= 0) return 0;
+
+    const capObj = Math.floor((capMaxForViewer as number) * clamp01(objetivoOcupacion01));
+    return capObj > 0 ? capObj : 0;
+  }, [selected, capMaxForViewer, objetivoOcupacion01]);
+
+  const ocupRealVol01ForViewer = useMemo(() => {
+    return ocupacionRealVol01({
+      bultoDim: isValidDim(bultoDimForViewer) ? bultoDimForViewer! : null,
+      unidadDim: isValidDim(unidadDimForViewer) ? unidadDimForViewer! : null,
+      placedUnits: placedUnitsForViewer,
+    });
+  }, [bultoDimForViewer, unidadDimForViewer, placedUnitsForViewer]);
+
+  const ocupPorCap01ForViewer = useMemo(() => {
+    return ocupacionPorCap01({
+      placedUnits: placedUnitsForViewer,
+      capMax: Number(capMaxForViewer ?? 0),
+    });
+  }, [placedUnitsForViewer, capMaxForViewer]);
+
 
   const clearLayouts = () => {
     setDraftLayout(null);
     setDraftKey(null);
   };
 
-
-
-  // 1) Si cambio de candidato A/B/C, el layout previo ya no es válido
   useEffect(() => {
     clearLayouts();
   }, [selected]);
 
-  // 2) Si cambio bulto empresa, invalido layout
   useEffect(() => {
     clearLayouts();
   }, [bultoEmpresaIdGlobal, bultoEmpresaIdBySku]);
 
-  // 3) Si edito demanda en C o D, invalido layout
+  useEffect(() => {
+    if (selected !== "B" && selected !== "D") return;
+    clearLayouts();
+  }, [selected, rotationMode, objetivoOcupacion01]);
+
   useEffect(() => {
     if (selected !== "C" && selected !== "D") return;
     clearLayouts();
   }, [selected, planUnitsBySku]);
 
-  // 4) Mantener viewerSkuId válido
   useEffect(() => {
     if (!skuOptions.length) return;
     const exists = skuOptions.some((s) => s.tipo_producto_id === viewerSkuId);
@@ -839,8 +863,6 @@ export function BultoPanel({
   useEffect(() => {
     if (selected === "A") clearLayouts();
   }, [selected, viewerSkuId]);
-
-  console.log("lote", lote);
 
   // =========================
   // Render
@@ -856,26 +878,15 @@ export function BultoPanel({
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {pill(`Tipo de productos: ${lote.items.length}`)}
-        </div>
+        <div className="flex flex-wrap gap-2">{pill(`Tipo de productos: ${lote.items.length}`)}</div>
 
-        {/* Selector A/B/C */}
+        {/* Selector A/B/C/D */}
         <div className="space-y-2">
-          <label className="text-xs font-medium text-slate-600">
-            Opciones de cubicación.
-          </label>
+          <label className="text-xs font-medium text-slate-600">Opciones de cubicación.</label>
 
           <div className="grid gap-2">
             {(["A", "B", "C", "D"] as const).map((k) => {
-              const snap =
-                k === "A"
-                  ? candidateA
-                  : k === "B"
-                    ? candidateB
-                    : k === "C"
-                      ? candidateC
-                      : candidateD;
+              const snap = k === "A" ? candidateA : k === "B" ? candidateB : k === "C" ? candidateC : candidateD;
               const isActive = selected === k;
 
               return (
@@ -893,17 +904,11 @@ export function BultoPanel({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {snap.titulo}
-                      </p>
+                      <p className="text-sm font-semibold text-slate-900">{snap.titulo}</p>
                       <p className="mt-1 text-xs text-slate-600">
-                        Totales: {snap.totales.unidades} un ·{" "}
-                        {snap.totales.bultos} bultos
+                        Totales: {snap.totales.unidades} un · {snap.totales.bultos} bultos
                         {snap.totales.bultosParciales > 0 ? (
-                          <span className="text-amber-700">
-                            {" "}
-                            · {snap.totales.bultosParciales} parciales
-                          </span>
+                          <span className="text-amber-700"> · {snap.totales.bultosParciales} parciales</span>
                         ) : null}
                       </p>
                     </div>
@@ -917,20 +922,12 @@ export function BultoPanel({
         {(selected === "B" || selected === "C" || selected === "D") && (
           <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
             <p className="text-xs font-medium text-slate-700">
-              {selected === "B"
-                ? "Operativo (B)"
-                : selected === "C"
-                  ? "Operativo (C)"
-                  : "Operativo (D)"}
+              {selected === "B" ? "Operativo (B)" : selected === "C" ? "Operativo (C)" : "Operativo (D)"}
             </p>
 
             <div className="rounded-md border bg-white p-3 space-y-2">
               <label className="flex items-center gap-2 text-xs text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={permiteMezcla}
-                  onChange={(e) => setPermiteMezcla(e.target.checked)}
-                />
+                <input type="checkbox" checked={permiteMezcla} onChange={(e) => setPermiteMezcla(e.target.checked)} />
                 Permitir mezcla de productos dentro del bulto
               </label>
 
@@ -941,44 +938,95 @@ export function BultoPanel({
               )}
             </div>
 
+            {(selected === "B" || selected === "D") && empresaBultos.length > 0 && (
+              <div className="rounded-md border bg-white p-3 space-y-2">
+                <p className="text-xs font-medium text-slate-700">Bultos empresa</p>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-slate-600">Bulto global</label>
+                  <select
+                    className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                    value={bultoEmpresaIdGlobal}
+                    onChange={(e) => setBultoEmpresaIdGlobal(e.target.value === "" ? "" : Number(e.target.value))}
+                  >
+                    <option value="">(sin seleccionar)</option>
+                    {empresaBultos.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {fmtBultoEmpresaOption(b)}
+                        {b.es_preferido ? " (preferido)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
 
-            {/* selector bulto empresa: B y D */}
             {(selected === "B" || selected === "D") &&
-              empresaBultos.length > 0 && (
-                <div className="rounded-md border bg-white p-3 space-y-2">
-                  <p className="text-xs font-medium text-slate-700">
-                    Bultos empresa
-                  </p>
+              (typeof bultoEmpresaIdGlobal === "number" ? (
+                <div className="rounded-md border bg-white p-3 space-y-3">
+                  <div>
+                    <p className="text-xs font-medium text-slate-700">Reglas geométricas (bulto empresa)</p>
+                    <p className="text-[11px] text-slate-500">Afecta el cálculo de capacidad por bulto en B/D.</p>
+                  </div>
+
                   <div className="space-y-1">
-                    <label className="text-[11px] text-slate-600">
-                      Bulto global
-                    </label>
+                    <label className="text-[11px] text-slate-600">Rotación de unidades</label>
+
                     <select
                       className="w-full border rounded-md px-3 py-2 text-sm bg-white"
-                      value={bultoEmpresaIdGlobal}
-                      onChange={(e) =>
-                        setBultoEmpresaIdGlobal(
-                          e.target.value === "" ? "" : Number(e.target.value),
-                        )
-                      }
+                      value={rotationMode}
+                      onChange={(e) => setRotationMode(e.target.value as any)}
                     >
-                      <option value="">(sin seleccionar)</option>
-                      {empresaBultos.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.codigo} — {b.largo_mm}×{b.ancho_mm}×{b.alto_mm} mm
-                          {b.es_preferido ? " (preferido)" : ""}
-                        </option>
-                      ))}
+                      <option value="NONE">Sin rotación</option>
+                      <option value="ROT_6">Rotación 6 orientaciones</option>
                     </select>
-                  </div>
-                </div>
-              )}
 
-            {(selected === "B" || selected === "C" || selected === "D") && (
+                    <p className="text-[11px] text-slate-500">
+                      Si está en ROT_6, se prueba L×A×H, L×H×A, A×L×H, A×H×L, H×L×A, H×A×L.
+                    </p>
+                  </div>
+
+                    <div className="space-y-2">
+                      <label className="text-[11px] text-slate-600">
+                        Objetivo de ocupación del bulto
+                      </label>
+
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={10}
+                          max={100}
+                          step={1}
+                          value={Math.round(objetivoOcupacion01 * 100)}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            setObjetivoOcupacion01(Math.min(1, Math.max(0.1, v / 100)));
+                          }}
+                          className="w-full"
+                        />
+
+                        <span className="w-14 text-right text-xs font-medium text-slate-700">
+                          {Math.round(objetivoOcupacion01 * 100)}%
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-slate-500">
+                        En <span className="font-medium">B</span> recorta capacidad (operativo).
+                        En <span className="font-medium">D</span> es el objetivo para el packing (stop/target), sin tocar la capacidad máxima.
+                      </p>
+                    </div>
+                </div>
+              ) : (
+                <div className="rounded-md border bg-white p-3">
+                  <p className="text-xs font-medium text-slate-700">Reglas geométricas</p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Seleccioná un <span className="font-medium">bulto global</span> para habilitar rotación/objetivo.
+                  </p>
+                </div>
+              ))}
+
+            {permiteMezcla && (selected === "B" || selected === "C" || selected === "D") && (
               <div className="rounded-md border bg-white p-3 space-y-2">
-                <label className="text-xs font-medium text-slate-700">
-                  Mezcla de productos en el bulto
-                </label>
+                <label className="text-xs font-medium text-slate-700">Mezcla de productos en el bulto</label>
 
                 <div className="flex items-center gap-2">
                   <input
@@ -986,29 +1034,19 @@ export function BultoPanel({
                     min={1}
                     max={100}
                     value={Math.round(porcentajeMezcla * 100)}
-                    onChange={(e) =>
-                      setPorcentajeMezcla(
-                        Math.min(1, Math.max(0.01, Number(e.target.value) / 100)),
-                      )
-                    }
+                    onChange={(e) => setPorcentajeMezcla(Math.min(1, Math.max(0.01, Number(e.target.value) / 100)))}
                     className="w-20 border rounded-md px-2 py-1 text-sm"
                   />
                   <span className="text-xs text-slate-600">% del bulto objetivo</span>
                 </div>
 
-                <p className="text-[11px] text-slate-500">
-                  Indica qué porcentaje del volumen del bulto querés ocupar con mezcla.
-                </p>
+                <p className="text-[11px] text-slate-500">Indica qué porcentaje del volumen del bulto querés ocupar con mezcla.</p>
               </div>
             )}
 
-
-            {/* demanda editable: C y D */}
             {(selected === "C" || selected === "D") && (
               <div className="rounded-md border bg-white p-3">
-                <p className="text-xs font-medium text-slate-700">
-                  Demanda por SKU (editable)
-                </p>
+                <p className="text-xs font-medium text-slate-700">Demanda por SKU (editable)</p>
 
                 <div className="mt-3 max-h-72 overflow-auto rounded-md border">
                   <ul className="divide-y text-xs">
@@ -1017,32 +1055,22 @@ export function BultoPanel({
                       return (
                         <li key={id} className="p-3 space-y-2">
                           <div className="min-w-0">
-                            <p className="font-semibold text-slate-900">
-                              {it.tipo_producto.codigo}
-                            </p>
-                            <p className="text-slate-600">
-                              {it.tipo_producto.descripcion}
-                            </p>
+                            <p className="font-semibold text-slate-900">{it.tipo_producto.codigo}</p>
+                            <p className="text-slate-600">{it.tipo_producto.descripcion}</p>
                           </div>
 
                           <div className="space-y-1">
-                            <label className="text-[11px] text-slate-600">
-                              Unidades planificadas
-                            </label>
+                            <label className="text-[11px] text-slate-600">Unidades planificadas</label>
                             <input
                               className="w-full border rounded-md px-2 py-2 text-sm bg-white"
                               type="number"
                               min={0}
                               value={planUnitsBySku[id] ?? ""}
-                              onChange={(e) =>
-                                setPlanForSku(id, e.target.value)
-                              }
+                              onChange={(e) => setPlanForSku(id, e.target.value)}
                             />
                           </div>
 
-                          <p className="text-[11px] text-slate-500">
-                            Unidad (dim_unidad_mm): {fmtDim(tryDimUnidad(it))}
-                          </p>
+                          <p className="text-[11px] text-slate-500">Unidad (dim_unidad_mm): {fmtDim(tryDimUnidad(it))}</p>
                         </li>
                       );
                     })}
@@ -1056,7 +1084,6 @@ export function BultoPanel({
 
       {/* Columna derecha: Preview */}
       <div className="lg:col-span-7 space-y-4">
-        {/* Visor 3D */}
         <div className="rounded-lg border p-3 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs font-medium text-slate-700">Visor 3D</p>
@@ -1080,23 +1107,53 @@ export function BultoPanel({
             )}
           </div>
 
-          {/* Indicador */}
           {layoutForViewer?.placements?.length ? (
-            <div className="text-[11px] text-emerald-700">
-              Layout listo: {layoutForViewer.placements.length} unidades de
-              producto.
-            </div>
+            <div className="text-[11px] text-emerald-700">Layout listo: {layoutForViewer.placements.length} unidades de producto.</div>
           ) : (
             <div className="text-[11px] text-slate-500">
-              El layout no está generado o quedó desactualizado. Usá{" "}
-              <span className="font-medium">“Ver layout en visor”</span> para
-              calcular la ubicación de las unidades.
+              El layout no está generado o quedó desactualizado. Usá <span className="font-medium">“Ver layout en visor”</span>{" "}
+              para calcular la ubicación de las unidades.
             </div>
           )}
 
-          {isValidDim(activeItemForViewer?.dim_bulto_mm) ? (
+          {/* Métricas del bulto (output) */}
+          <div className="grid grid-cols-1 gap-1 rounded-md border bg-white p-2 text-[11px] text-slate-700">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500">Unidades en layout</span>
+              <span className="font-medium">{placedUnitsForViewer ?? "—"}</span>
+            </div>
+
+            {(selected === "B" || selected === "D") && (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Capacidad máx (grilla)</span>
+                <span className="font-medium">{capMaxForViewer ?? "—"}</span>
+              </div>
+            )}
+
+            {selected === "B" && (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Capacidad objetivo (slider)</span>
+                <span className="font-medium">{capObjetivoForViewer ?? "—"}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500">Ocupación real (volumen)</span>
+              <span className="font-medium">{pctTxt01(ocupRealVol01ForViewer)}</span>
+            </div>
+
+            {(selected === "B" || selected === "D") && (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Ocupación (vs cap máx)</span>
+                <span className="font-medium">{pctTxt01(ocupPorCap01ForViewer)}</span>
+              </div>
+            )}
+          </div>
+
+
+          {isValidDim(bultoDimForViewer) ? (
             <BultoViewerFromSnapshot
-              bultoDimMm={activeItemForViewer!.dim_bulto_mm!}
+              bultoDimMm={bultoDimForViewer!}
               unidadDimMm={unidadDimForViewer}
               productoId={activeItemForViewer!.tipo_producto_id}
               codigo={activeItemForViewer!.codigo}
@@ -1105,13 +1162,11 @@ export function BultoPanel({
             />
           ) : (
             <div className="rounded-md border bg-slate-50 p-3 text-xs text-slate-600">
-              No hay dimensiones de bulto válidas para este SKU en el candidato
-              activo.
+              No hay dimensiones de bulto válidas para este SKU en el candidato activo.
             </div>
           )}
         </div>
 
-        {/* Warnings */}
         {active.warnings && active.warnings.length > 0 && (
           <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg text-xs text-amber-900">
             <p className="font-semibold mb-1">Advertencias</p>
@@ -1121,9 +1176,7 @@ export function BultoPanel({
               ))}
             </ul>
             {active.warnings.length > 10 ? (
-              <p className="mt-2 text-[11px] text-amber-800">
-                Se muestran 10 de {active.warnings.length}.
-              </p>
+              <p className="mt-2 text-[11px] text-amber-800">Se muestran 10 de {active.warnings.length}.</p>
             ) : null}
           </div>
         )}
@@ -1131,18 +1184,13 @@ export function BultoPanel({
         <div className="mt-3 space-y-2">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-[11px] text-slate-500">
-              Totales: {active.totales.unidades} un · {active.totales.bultos}{" "}
-              bultos
+              Totales: {active.totales.unidades} un · {active.totales.bultos} bultos
               {active.totales.bultosParciales > 0 ? (
-                <span className="text-amber-700">
-                  {" "}
-                  · {active.totales.bultosParciales} parciales
-                </span>
+                <span className="text-amber-700"> · {active.totales.bultosParciales} parciales</span>
               ) : null}
             </div>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {/* 1) Ver layout */}
               <button
                 type="button"
                 disabled={layoutLoading}
@@ -1150,14 +1198,9 @@ export function BultoPanel({
                   setLayoutError(null);
                   setApplyError(null);
 
-                  // ✅ dejá SOLO esta validación (la otra duplicada sacala)
-                  if (
-                    activeWithMix.permiteMezcla &&
-                    activeWithMix.scope === "MIXTO" &&
-                    !bultoEmpresaIdGlobal
-                  ) {
+                  if (activeWithMix.permiteMezcla && activeWithMix.scope === "MIXTO" && !bultoEmpresaIdGlobal) {
                     setLayoutError("Para mezclar productos debés seleccionar un bulto de empresa.");
-                    return; // ✅ retorna antes de setLayoutLoading(true)
+                    return;
                   }
 
                   setLayoutLoading(true);
@@ -1166,8 +1209,10 @@ export function BultoPanel({
                     const res = await previewBultoLayout3D({
                       loteId: effectiveLoteId ?? undefined,
                       simulacionId: typeof simulacionId === "number" ? simulacionId : undefined,
-                      snap: snapForLayout, // ✅ ACÁ
-                      bultoOverrideMm: activeItemForViewer?.dim_bulto_mm ?? null,
+                      snap: snapForLayout,
+                      bultoOverrideMm: selected === "B" || selected === "D" ? overrideFromEmpresa : null,
+                      rotationMode,
+                      stopAtOcupacion01: selected === "B" ? objetivoOcupacion01 : null,
                     });
 
                     setDraftLayout(res.layout);
@@ -1186,13 +1231,11 @@ export function BultoPanel({
                     setLayoutLoading(false);
                   }
                 }}
-
                 className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 text-sm disabled:opacity-50"
               >
                 {layoutLoading ? "Generando layout..." : "Ver layout en visor"}
               </button>
 
-              {/* 2) Guardar y continuar (simulación + lote si existe) */}
               <button
                 type="button"
                 disabled={!canApply || applyLoading}
@@ -1201,42 +1244,28 @@ export function BultoPanel({
               >
                 {applyLoading ? "Guardando..." : "Guardar y continuar"}
               </button>
-
             </div>
           </div>
 
-          {/* Hint */}
           <p className="text-[11px] text-slate-500">
             {canApply ? (
               <>
-                Layout verificado para{" "}
-                <span className="font-medium">candidato {selected}</span>. Podés
-                aplicar al workflow.
+                Layout verificado para <span className="font-medium">candidato {selected}</span>. Podés aplicar al workflow.
               </>
             ) : (
               <>
-                Para aplicar, primero generá y verificá el layout con{" "}
-                <span className="font-medium">“Ver layout en visor”</span>.
+                Para aplicar, primero generá y verificá el layout con <span className="font-medium">“Ver layout en visor”</span>.
               </>
             )}
           </p>
 
-          {layoutError && (
-            <p className="text-[11px] text-red-600">{layoutError}</p>
-          )}
-
-          {applyError && (
-            <p className="text-[11px] text-red-600">{applyError}</p>
-          )}
+          {layoutError && <p className="text-[11px] text-red-600">{layoutError}</p>}
+          {applyError && <p className="text-[11px] text-red-600">{applyError}</p>}
         </div>
 
-        {/* Vista rápida */}
         <details className="rounded-lg border p-3">
           <summary className="cursor-pointer text-xs font-medium text-slate-700">
-            Vista rápida
-            <span className="ml-2 text-[11px] text-slate-500">
-              ({active.items.length} SKUs)
-            </span>
+            Vista rápida <span className="ml-2 text-[11px] text-slate-500">({active.items.length} SKUs)</span>
           </summary>
 
           <div className="mt-2 max-h-72 overflow-auto rounded-md border">
@@ -1247,39 +1276,10 @@ export function BultoPanel({
 
                   <p className="mt-1 text-slate-700">
                     Unidades planificadas: {it.unidades_planificadas}
-                    {isParcialRow(it) ? (
-                      <span className="text-amber-700">
-                        {" "}
-                        · parcial ({it.sobrante_unidades} un)
-                      </span>
-                    ) : null}
+                    {isParcialRow(it) ? <span className="text-amber-700"> · parcial ({it.sobrante_unidades} un)</span> : null}
                   </p>
-                  <p className="mt-1 text-slate-700">
-                    Bultos: {it.cantidad_bultos}
-                  </p>
-                  <p className="mt-1 text-slate-700">
-                    Capacidad por bulto:{it.unidades_por_bulto}
-                  </p>
-                  {/* <p className="mt-1 text-slate-500">
-                    Dim bulto: {fmtDim(it.dim_bulto_mm)} ·{" "}
-                    <span className="text-[11px]">
-                      un/bulto:{" "}
-                      <span className="font-medium">
-                        {it.audit.sourceUnPorBulto}
-                      </span>{" "}
-                      · dims:{" "}
-                      <span className="font-medium">{it.audit.sourceDims}</span>
-                      {it.audit.bultoEmpresaCodigo ? (
-                        <>
-                          {" "}
-                          · bulto:{" "}
-                          <span className="font-medium">
-                            {it.audit.bultoEmpresaCodigo}
-                          </span>
-                        </>
-                      ) : null}
-                    </span>
-                  </p> */}
+                  <p className="mt-1 text-slate-700">Bultos: {it.cantidad_bultos}</p>
+                  <p className="mt-1 text-slate-700">Capacidad por bulto: {it.unidades_por_bulto}</p>
                 </li>
               ))}
             </ul>

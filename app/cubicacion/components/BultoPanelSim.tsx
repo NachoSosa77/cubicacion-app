@@ -3,21 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { listProductosPlan } from "../actions/productoPlanActions";
 import { BultoPanel } from "../simulacion/[simulacionId]/BultoPanel";
-
-type EmpresaBulto = {
-  id: number;
-  empresa_id: number;
-  codigo: string;
-  descripcion?: string | null;
-  largo_mm: number;
-  ancho_mm: number;
-  alto_mm: number;
-  espesor_pared_mm: number;
-  tara_kg?: number | null;
-  max_peso_kg?: number | null;
-  es_preferido: boolean;
-  habilitado: boolean;
-};
+import { EmpresaBultoDTO } from "../simulacion/types/domains";
 
 type TipoProductoMini = {
   id: number;
@@ -69,11 +55,13 @@ type ClientLote = {
 
 export function BultoPanelSim({
   simulacionId,
+  simulacionLoteId,
   empresaBultos,
   onApply,
 }: {
   simulacionId: number;
-  empresaBultos: EmpresaBulto[];
+  simulacionLoteId: number | null;
+  empresaBultos: EmpresaBultoDTO[];
   onApply: (snap: any) => void;
 }) {
   const [rows, setRows] = useState<ProductoPlanRow[] | null>(null);
@@ -151,6 +139,6 @@ export function BultoPanelSim({
   }
 
   return (
-    <BultoPanel lote={loteVirtual} empresaBultos={empresaBultos} onApply={onApply} simulacionId={simulacionId} />
+    <BultoPanel lote={loteVirtual} empresaBultos={empresaBultos} onApply={onApply} simulacionId={simulacionId} simulacionLoteId={simulacionLoteId} />
   );
 }

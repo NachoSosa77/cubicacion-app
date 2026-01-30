@@ -455,7 +455,7 @@ export function SimulacionClient({
                 )}
               </div>
 
-              <div className="flex flex-wrap gap-2">
+              {/* <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   className="px-3 py-2 rounded-md border bg-white text-slate-900 hover:bg-slate-50 text-sm"
@@ -490,7 +490,7 @@ export function SimulacionClient({
                 >
                   Ir a Camión
                 </button>
-              </div>
+              </div> */}
             </div>
           </div>
 
@@ -781,6 +781,7 @@ export function SimulacionClient({
                 ) : (
                   <BultoPanelSim
                     simulacionId={simulacionId}
+                    simulacionLoteId={simulacionLoteId}
                     empresaBultos={empresaBultos}
                     onApply={(snap) => {
                       setBultoSnap(snap);
