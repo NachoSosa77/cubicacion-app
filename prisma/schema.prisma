@@ -648,13 +648,17 @@ model EmpresaBulto {
   // ... tus otros inversos
 
   // ✅ inverso para la FK nueva:
-  cubicacionLoteItems CubicacionLoteItem[]
+  cubicacionLoteItems      CubicacionLoteItem[]
+  cubicacions              Cubicacion[]
+  cubicacionConfiguracions CubicacionConfiguracion[]
+  bultoArmados             BultoArmado[]
+  cubicacionLotes          CubicacionLote[]
+  cubicacionBultoPlans     CubicacionBultoPlan[]
 
   @@unique([empresa_id, codigo])
   @@index([empresa_id, habilitado])
   @@map("empresa_bulto")
 }
-
 
 model Transporte {
   id Int @id @default(autoincrement())
@@ -687,7 +691,7 @@ model CubicacionLote {
 
   // NUEVO: estado + meta (existen en DB por lo que mostraste)
   status CubicacionLoteStatus @default(BORRADOR)
-  meta   Json? @db.Json
+  meta   Json?                @db.Json
 
   // totales snapshot del lote (consistencia para pallet/camión)
   unidades_totales Int @default(0)
@@ -717,14 +721,13 @@ model CubicacionLote {
   @@map("cubicacion_lote")
 }
 
-
 model CubicacionLoteItem {
   id Int @id @default(autoincrement())
 
   lote_id          Int
   tipo_producto_id Int
 
-  cantidad_unidades Int
+  cantidad_unidades  Int
   cantidad_bultos    Int  @default(1)
   unidades_por_bulto Int?
 
@@ -736,8 +739,8 @@ model CubicacionLoteItem {
   dim_unidad_mm  Json?  @db.Json
   peso_unidad_kg Float?
 
-  dim_bulto_mm      Json? @db.Json
-  bulto_empresa_id  Int?   // FK nullable
+  dim_bulto_mm     Json? @db.Json
+  bulto_empresa_id Int? // FK nullable
 
   bulto_fuente BultoFuente @default(CATALOGO)
   created_at   DateTime    @default(now())
@@ -746,7 +749,7 @@ model CubicacionLoteItem {
   tipo_producto TipoProducto   @relation(fields: [tipo_producto_id], references: [id])
 
   // ✅ ESTA ES LA CLAVE:
-  bulto_empresa  EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id], onDelete: SetNull)
+  bulto_empresa EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id], onDelete: SetNull)
 
   @@index([lote_id], map: "idx_lote_item")
   @@index([tipo_producto_id])
@@ -754,7 +757,6 @@ model CubicacionLoteItem {
   @@index([bulto_empresa_id], map: "idx_lote_item_bulto_empresa_id")
   @@map("cubicacion_lote_item")
 }
-
 
 model CubicacionPalletPlan {
   id Int @id @default(autoincrement())

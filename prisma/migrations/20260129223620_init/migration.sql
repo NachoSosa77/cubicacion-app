@@ -487,12 +487,14 @@ CREATE TABLE `cubicacion_lote_item` (
     `dim_unidad_mm` JSON NULL,
     `peso_unidad_kg` DOUBLE NULL,
     `dim_bulto_mm` JSON NULL,
+    `bulto_empresa_id` INTEGER NULL,
     `bulto_fuente` ENUM('CATALOGO', 'OPERATIVO', 'EMPRESA_BULTO') NOT NULL DEFAULT 'CATALOGO',
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
     INDEX `idx_lote_item`(`lote_id`),
     INDEX `cubicacion_lote_item_tipo_producto_id_idx`(`tipo_producto_id`),
     INDEX `idx_lote_item_bulto_fuente`(`bulto_fuente`),
+    INDEX `idx_lote_item_bulto_empresa_id`(`bulto_empresa_id`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -733,6 +735,9 @@ ALTER TABLE `cubicacion_lote_item` ADD CONSTRAINT `cubicacion_lote_item_lote_id_
 
 -- AddForeignKey
 ALTER TABLE `cubicacion_lote_item` ADD CONSTRAINT `cubicacion_lote_item_tipo_producto_id_fkey` FOREIGN KEY (`tipo_producto_id`) REFERENCES `tipo_producto`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `cubicacion_lote_item` ADD CONSTRAINT `cubicacion_lote_item_bulto_empresa_id_fkey` FOREIGN KEY (`bulto_empresa_id`) REFERENCES `empresa_bulto`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `cubicacion_pallet_plan` ADD CONSTRAINT `cubicacion_pallet_plan_lote_id_fkey` FOREIGN KEY (`lote_id`) REFERENCES `cubicacion_lote`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
