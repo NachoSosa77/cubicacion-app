@@ -123,6 +123,7 @@ type PalletParametros =
 
 interface Props {
   empresaId: number;
+  simulacionId: number;
   lote: ClientLote;
   contenedores: ClientContenedor[];
   bultoSnap: BultoSimSnapshot | null;
@@ -166,6 +167,7 @@ function tryDimMm(v: any): DimMm | null {
 
 export function PalletClientSimV2({
   empresaId,
+  simulacionId,
   lote,
   contenedores,
   bultoSnap,
@@ -445,6 +447,7 @@ export function PalletClientSimV2({
       try {
         const res = await guardarPalletPlan({
           ...form,
+          parametros: form.parametros ?? null,
           plan: result,
         });
 

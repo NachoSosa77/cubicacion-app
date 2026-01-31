@@ -1,0 +1,30 @@
+SELECT
+  id,
+  simulacion_id,
+  tipo_producto_id,
+  cantidad_unidades,
+  unidades_por_bulto,
+  cantidad_bultos,
+  sobrante_unidades,
+  unidades_en_ultimo_bulto,
+  dim_bulto_mm,
+  updated_at
+FROM cubicacion_producto_plan
+WHERE simulacion_id = <TU_SIMULACION_ID>
+ORDER BY tipo_producto_id;
+
+SELECT
+  id,
+  lote_id,
+  tipo_producto_id,
+  cantidad_unidades,
+  unidades_por_bulto,
+  cantidad_bultos,
+  sobrante_unidades,
+  unidades_en_ultimo_bulto,
+  dim_bulto_mm,
+  bulto_fuente,
+  bulto_empresa_id
+FROM cubicacion_lote_item
+WHERE lote_id = <TU_LOTE_ID>
+ORDER BY tipo_producto_id;

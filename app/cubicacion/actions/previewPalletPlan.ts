@@ -17,11 +17,16 @@ type SourceTag =
 
 type DimMm = { largo: number; ancho: number; alto: number };
 
-type BultoSimSnapshot = {
+type BultoSnapshotForPallet = {
   candidateKey: "A" | "B" | "C" | "D";
   titulo: string;
-  scope?: "LOTE" | "SKU";
+
+  // Si te sirve para pallet, dejalo; pero que coincida con la realidad del dominio:
+  scope?: "SKU" | "MIXTO"; // o directamente eliminá scope si no lo usás
+
+  // en el canónico es obligatorio; acá lo dejamos opcional porque no dependés de warnings
   warnings?: string[];
+
   items: Array<{
     tipo_producto_id: number;
     codigo: string;
@@ -37,6 +42,7 @@ type BultoSimSnapshot = {
       bultoEmpresaCodigo?: string;
     };
   }>;
+
   totales: {
     unidades: number;
     bultos: number;
@@ -77,6 +83,81 @@ function dimFromAny(v: any): DimMm | null {
   return isValidDimMm(d) ? d : null;
 }
 
+function floorPosInt(v: unknown): number | null {
+  const n = Math.floor(toNumber(v, 0));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Reparte "targetTotal" bultos entre items proporcionalmente al base,
+ * y ajusta redondeos para sumar EXACTO targetTotal.
+ */
+function distribuirBultosProporcional<T extends { cantidadBultos: number }>(
+  items: T[],
+  targetTotal: number,
+): T[] {
+  const baseTotal = items.reduce(
+    (a, it) => a + Math.max(0, toNumber(it.cantidadBultos, 0)),
+    0,
+  );
+
+  // Si no hay base (debería no pasar), repartimos 1 a 1 hasta target.
+  if (baseTotal <= 0) {
+    const out = items.map((it) => ({ ...it, cantidadBultos: 0 }));
+    let left = targetTotal;
+    for (let i = 0; i < out.length && left > 0; i++) {
+      out[i].cantidadBultos = 1;
+      left--;
+    }
+    // Si target es mayor que la cantidad de SKUs, ponemos el resto en el primero.
+    if (left > 0 && out.length > 0) out[0].cantidadBultos += left;
+    return out;
+  }
+
+  // 1) cuotas reales
+  const cuotas = items.map((it) => {
+    const base = Math.max(0, toNumber(it.cantidadBultos, 0));
+    const cuotaReal = (base / baseTotal) * targetTotal;
+    const cuotaFloor = Math.floor(cuotaReal);
+    const frac = cuotaReal - cuotaFloor;
+    return { base, cuotaReal, cuotaFloor, frac };
+  });
+
+  // 2) asignación inicial (floors)
+  let asignados = cuotas.reduce((a, q) => a + q.cuotaFloor, 0);
+  let faltan = targetTotal - asignados;
+
+  // 3) repartir faltantes por mayor fracción (método Hamilton)
+  const order = cuotas
+    .map((q, idx) => ({ idx, frac: q.frac }))
+    .sort((a, b) => b.frac - a.frac);
+
+  const asignacion = cuotas.map((q) => q.cuotaFloor);
+
+  for (let k = 0; k < order.length && faltan > 0; k++) {
+    asignacion[order[k].idx] += 1;
+    faltan--;
+  }
+
+  // Si por algún motivo quedó faltante (muy raro), lo acumulamos en el primero
+  if (faltan > 0 && asignacion.length > 0) asignacion[0] += faltan;
+
+  // 4) construir salida asegurando >=1 para items que tenían base>0 (opcional)
+  // En stress-test puede ser válido que un SKU quede en 0; lo permitimos.
+  const out = items.map((it, idx) => ({
+    ...it,
+    cantidadBultos: asignacion[idx],
+  }));
+
+  // 5) sanity: suma exacta
+  const suma = out.reduce((a, it) => a + toNumber(it.cantidadBultos, 0), 0);
+  if (suma !== targetTotal && out.length > 0) {
+    out[0].cantidadBultos += targetTotal - suma;
+  }
+
+  return out;
+}
+
 /* =========================
    Main
 ========================= */
@@ -109,7 +190,7 @@ export async function previewPalletPlan(params: {
   modoSimulacion?: boolean;
 
   // V2 snapshot aplicado desde simulación de bulto
-  bultoSnapshot?: BultoSimSnapshot;
+  bultoSnapshot?: BultoSnapshotForPallet;
 }) {
   const {
     empresaId,
@@ -216,11 +297,16 @@ export async function previewPalletPlan(params: {
   }
 
   // 5) Map snapshot por tipo_producto_id
-  const snapByTipoProd = new Map<number, BultoSimSnapshot["items"][number]>();
+  const snapByTipoProd = new Map<
+    number,
+    BultoSnapshotForPallet["items"][number]
+  >();
   if (bultoSnapshot?.items?.length) {
     for (const s of bultoSnapshot.items)
       snapByTipoProd.set(s.tipo_producto_id, s);
   }
+
+  const proBultosSimulados = floorPosInt(parametros?.bultosSimulados);
 
   // 6) Armado de items
   const items = lote.items.map((it) => {
@@ -348,12 +434,34 @@ export async function previewPalletPlan(params: {
     };
   });
 
+  // ✅ Stress-test PRO: si viene bultosSimulados, re-armamos oferta (items) para el motor
+  const multiSkuBase =
+    items.filter((x) => toNumber(x.cantidadBultos, 0) > 0).length > 1;
+
+  let itemsEfectivos = items;
+
+  if (proBultosSimulados != null) {
+    if (!multiSkuBase) {
+      // SINGLE SKU: set directo
+      itemsEfectivos = items.map((it) => ({
+        ...it,
+        cantidadBultos: proBultosSimulados,
+      }));
+    } else {
+      // MULTI SKU: reparto proporcional al mix base
+      itemsEfectivos = distribuirBultosProporcional(items, proBultosSimulados);
+    }
+  }
+
   // 7) Supply real (preferimos items)
-  const bultosFromItems = items.reduce(
+  const bultosFromItems = itemsEfectivos.reduce(
     (acc, it) => acc + toNumber(it.cantidadBultos, 0),
     0,
   );
-  const bultosFromLote = toNumber((lote as any).bultos_totales, 0);
+  const bultosFromLote = lote.items.reduce(
+    (acc, it) => acc + toNumber((it as any).cantidad_bultos, 0),
+    0,
+  );
 
   const bultosDisponibles =
     bultosFromItems > 0 ? bultosFromItems : bultosFromLote;
@@ -364,19 +472,15 @@ export async function previewPalletPlan(params: {
 
   // 8) Objetivos: prioridad PRO > legacy > supply
   //    ✅ PRO: bultosSimulados NO clampa contra supply (sirve para stress-test/capacidad)
-  const legacyObjetivoUnidades =
+  // legacy objetivoUnidades (en realidad bultos)
+  const legacyObjetivoBultos =
     objetivoUnidades != null && toNumber(objetivoUnidades, 0) > 0
-      ? toNumber(objetivoUnidades, 0)
+      ? Math.floor(toNumber(objetivoUnidades, 0))
       : null;
 
-  const proBultosSimulados =
-    parametros?.bultosSimulados != null &&
-    toNumber(parametros.bultosSimulados, 0) > 0
-      ? toNumber(parametros.bultosSimulados, 0)
-      : null;
-
-  const objetivoUnidadesEfectivo =
-    proBultosSimulados ?? legacyObjetivoUnidades ?? bultosDisponibles;
+  // En stress-test, el objetivo de bultos debería alinearse con la oferta efectiva (itemsEfectivos)
+  const objetivoBultosEfectivo =
+    proBultosSimulados ?? legacyObjetivoBultos ?? bultosDisponibles;
 
   // ocupación 0..1: prioridad PRO > legacy
   const legacyObjOcup =
@@ -437,7 +541,23 @@ export async function previewPalletPlan(params: {
 
   // ✅ MixPolicy efectiva (regla profesional)
   // En OPERATIVO_ESTABLE con múltiples SKUs, no permitimos mezcla.
-  const multiSku = items.filter((x) => x.cantidadBultos > 0).length > 1;
+
+  if (proBultosSimulados != null) {
+    if (!multiSkuBase) {
+      // SINGLE SKU: set directo
+      itemsEfectivos = items.map((it) => ({
+        ...it,
+        cantidadBultos: proBultosSimulados,
+      }));
+    } else {
+      // MULTI SKU: reparto proporcional al mix base
+      itemsEfectivos = distribuirBultosProporcional(items, proBultosSimulados);
+    }
+  }
+
+  // MultiSku efectivo (después de stress-test)
+  const multiSku =
+    itemsEfectivos.filter((x) => toNumber(x.cantidadBultos, 0) > 0).length > 1;
 
   const mixPolicyEfectiva: "NO_MEZCLAR" | "PERMITIR_MEZCLA" =
     objective === "OPERATIVO_ESTABLE" && multiSku ? "NO_MEZCLAR" : mixPolicy;
@@ -466,7 +586,8 @@ export async function previewPalletPlan(params: {
       bultosFromItems,
       bultosFromLote,
       bultosDisponibles,
-      objetivoUnidadesEfectivo,
+      objetivoBultosEfectivo,
+      proBultosSimulados,
       modoSimulacionEfectivo,
       objective,
       rotacion2DEfectiva,
@@ -479,8 +600,8 @@ export async function previewPalletPlan(params: {
   });
 
   console.log(
-    "PREVIEW_PALLET :: ITEMS",
-    items.map((x) => ({
+    "PREVIEW_PALLET :: ITEMS_EFECTIVOS",
+    itemsEfectivos.map((x) => ({
       codigo: x.codigo,
       cantidadBultos: x.cantidadBultos,
       dimBultoMm: x.dimBultoMm,
@@ -488,6 +609,17 @@ export async function previewPalletPlan(params: {
       apilable: x.apilable,
     })),
   );
+
+  if (proBultosSimulados != null) {
+    console.log(
+      "PREVIEW_PALLET :: ITEMS_BASE",
+      items.map((x) => ({
+        codigo: x.codigo,
+        cantidadBultos: x.cantidadBultos,
+        dimBultoMm: x.dimBultoMm,
+      })),
+    );
+  }
 
   const motivoMix = !multiSku
     ? "SINGLE_SKU"
@@ -528,13 +660,20 @@ export async function previewPalletPlan(params: {
     objective,
     rotacion2D: rotacion2DEfectiva,
     parametros: parametrosMotor,
-    items,
+    items: itemsEfectivos,
 
-    // legacy (el motor lo usa para cortes)
-    objetivoUnidades: objetivoUnidadesEfectivo,
+    // legacy (pero ahora es objetivo BULTOS real)
+    objetivoUnidades: objetivoBultosEfectivo,
     objetivoOcupacion: objetivoOcupacion01Efectivo,
     modoSimulacion: modoSimulacionEfectivo,
   });
 
-  return { plan };
+  return {
+    plan: {
+      ...plan,
+      _meta: {
+        candidateKey: bultoSnapshot?.candidateKey ?? null,
+      },
+    },
+  };
 }

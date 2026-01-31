@@ -1,0 +1,164 @@
+Qué significa “Ocupación (hasta altura usada)” – 75%
+
+Ese 75% NO es ocupación total del pallet, sino:
+
+Qué porcentaje del volumen disponible hasta la altura que efectivamente se usó está ocupado por bultos.
+
+Formalmente en tu motor es esto:
+
+ocupacionVolumenPct =
+  (volumenCajasMm3 / volumenUsadoAlturaMm3) * 100
+
+
+Donde:
+
+volumenCajasMm3
+👉 volumen real de los bultos colocados
+
+volumenUsadoAlturaMm3
+👉 base del pallet × altura usada real
+
+2️⃣ Alturas: las 3 que aparecen (y para qué sirve cada una)
+🔹 Altura física: 2.800 m
+
+Es la altura total del contenedor/pallet
+
+Viene de:
+
+palletDimMm.alto
+
+
+Es un límite físico absoluto
+
+No siempre se puede usar toda
+
+👉 Ejemplo: limitaciones de estabilidad, reglamento, transporte, etc.
+
+🔹 Altura operativa máx: 2.200 m
+
+Es el límite efectivo permitido
+
+Sale de:
+
+min(altura física, regla.maxAlturaM)
+
+
+Representa:
+
+reglas de la empresa
+
+transporte
+
+seguridad / manipulación
+
+👉 Esta es la altura máxima que el motor puede usar, aunque el pallet mida más.
+
+🔹 Altura usada: 2.080 m
+
+Es lo que realmente se terminó usando
+
+Se calcula como:
+
+capas * altoBulto
+
+
+En tu caso:
+
+entraron X capas
+
+la siguiente capa no entraba (o por altura o por otro corte)
+
+👉 Es la altura real del pallet armado.
+
+3️⃣ Entonces… ¿por qué 75%?
+
+Vamos a ponerlo en números simples.
+
+Base del pallet (ejemplo)
+
+1.20 m × 1.00 m = 1.20 m²
+
+Volumen disponible hasta altura usada
+1.20 × 2.080 = 2.496 m³
+
+Volumen real de los bultos colocados
+≈ 1.872 m³
+
+Ocupación (hasta altura usada)
+1.872 / 2.496 = 0.75 → 75%
+
+
+✔️ Eso significa:
+
+Dentro del espacio que efectivamente se usó en altura, el pallet está bastante bien aprovechado.
+
+No hay “aire” excesivo dentro de las capas armadas.
+
+4️⃣ Diferencia clave con la otra ocupación (muy importante)
+
+En tu motor tenés 3 métricas distintas (y está perfecto):
+
+🟢 Ocupación base (%)
+
+Qué tanto se ocupa la superficie del pallet por capa
+
+Sirve para ver packing 2D
+
+🟡 Ocupación (hasta altura usada) → 75%
+
+Qué tan eficiente fue el armado en el volumen realmente utilizado
+
+Sirve para evaluar calidad del layout
+
+🔴 Ocupación lograda (% del volumen máximo)
+
+Esta es otra métrica distinta:
+
+ocupacionLogradaPct =
+  volumenCajasMm3 / volumenMaxMm3
+
+
+Donde volumenMaxMm3 usa la altura operativa máxima (2.200 m).
+
+En tu caso sería algo así como:
+
+1.872 / (1.20 × 2.200) ≈ 70.9%
+
+
+👉 Esta te dice:
+
+“Si comparo contra TODO lo que podría usar, ¿cuánto llené?”
+
+5️⃣ Cómo explicarlo simple (cliente / usuario)
+
+Si mañana alguien te pregunta:
+
+“¿Por qué dice 75% si todavía queda altura?”
+
+Respuesta perfecta:
+
+Porque el 75% mide qué tan bien aprovechado está el volumen hasta la altura que efectivamente se usó.
+El pallet se armó de forma eficiente; simplemente no se llegó a usar toda la altura operativa porque no entraban más capas sin violar reglas físicas u operativas.
+
+6️⃣ Conclusión técnica (para vos)
+
+❌ No es un bug
+
+❌ No está mal calculado
+
+✅ Es una métrica correcta, profesional y defendible
+
+✅ Separar:
+
+altura física
+
+altura operativa
+
+altura usada
+fue una muy buena decisión de diseño
+
+Si querés, en el próximo mensaje podemos:
+
+renombrar los labels para que sean todavía más claros en UI
+
+o decidir cuál de las 3 ocupaciones mostrar como principal según el objetivo (operativo vs comercial).

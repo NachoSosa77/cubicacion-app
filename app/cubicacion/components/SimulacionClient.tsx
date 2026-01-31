@@ -821,6 +821,7 @@ export function SimulacionClient({
                   <>
                     <PalletClientV2
                       empresaId={empresaId}
+                      simulacionId={simulacionId}
                       lote={loteForPallet as any}
                       contenedores={contenedores as any}
                       bultoSnap={bultoSnap}

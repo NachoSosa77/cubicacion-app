@@ -10,12 +10,14 @@ type ClientLote = any;
 
 export function PalletClientV2({
   empresaId,
+  simulacionId,
   lote,
   contenedores,
   bultoSnap,
   onSaved,
 }: {
   empresaId: number;
+  simulacionId: number;
   lote: ClientLote;
   contenedores: ClientContenedor[];
   bultoSnap: BultoSimSnapshot | null;
@@ -100,6 +102,7 @@ export function PalletClientV2({
               key={`pallet-v2-lote-${lote?.id ?? "X"}-bulto-${bultoSnap?.candidateKey ?? "NONE"
                 }`}
               empresaId={empresaId}
+              simulacionId={simulacionId}
               lote={loteSimulado}
               contenedores={contenedores}
               bultoSnap={bultoSnap}

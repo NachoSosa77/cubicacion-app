@@ -402,8 +402,23 @@ export function calcularPalletPlan(input: PalletInput): PalletPlanResult {
     cajasPorCapaRef = Math.max(cajasPorCapaRef, cajasEnEstaCapa);
   }
 
-  const quedan = pendientes.some((p) => p.cantidadBultos > 0);
-  const palletsRequeridos = cajasTotales > 0 ? (quedan ? 2 : 1) : 0;
+  const totalBultosObjetivo = input.items.reduce(
+    (acc, it) => acc + Math.max(0, Math.floor(Number(it.cantidadBultos || 0))),
+    0,
+  );
+
+  // Si no entró nada en el pallet1, no podemos estimar (0 o error)
+  const palletsRequeridos =
+    cajasTotales > 0
+      ? Math.max(1, Math.ceil(totalBultosObjetivo / cajasTotales))
+      : 0;
+
+  // Si querés advertir cuando el pallet1 no pudo colocar nada:
+  if (totalBultosObjetivo > 0 && cajasTotales === 0) {
+    warnings.push(
+      "No se pudo colocar ningún bulto en pallet1 con las restricciones actuales.",
+    );
+  }
 
   const areaPallet = palletDimMm.largo * palletDimMm.ancho;
   const areaOcupada =

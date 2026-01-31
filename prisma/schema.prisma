@@ -694,7 +694,6 @@ model CubicacionLote {
   // NUEVO: estado + meta (existen en DB por lo que mostraste)
   status CubicacionLoteStatus @default(BORRADOR)
   meta   Json?                @db.Json
-  meta   Json?                @db.Json
 
   // totales snapshot del lote (consistencia para pallet/camión)
   unidades_totales Int @default(0)
@@ -731,7 +730,6 @@ model CubicacionLoteItem {
   tipo_producto_id Int
 
   cantidad_unidades  Int
-  cantidad_unidades  Int
   cantidad_bultos    Int  @default(1)
   unidades_por_bulto Int?
 
@@ -745,8 +743,6 @@ model CubicacionLoteItem {
 
   dim_bulto_mm     Json? @db.Json
   bulto_empresa_id Int? // FK nullable
-  dim_bulto_mm     Json? @db.Json
-  bulto_empresa_id Int? // FK nullable
 
   bulto_fuente BultoFuente @default(CATALOGO)
   created_at   DateTime    @default(now())
@@ -755,7 +751,6 @@ model CubicacionLoteItem {
   tipo_producto TipoProducto   @relation(fields: [tipo_producto_id], references: [id])
 
   // ✅ ESTA ES LA CLAVE:
-  bulto_empresa EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id], onDelete: SetNull)
   bulto_empresa EmpresaBulto? @relation(fields: [bulto_empresa_id], references: [id], onDelete: SetNull)
 
   @@index([lote_id], map: "idx_lote_item")
